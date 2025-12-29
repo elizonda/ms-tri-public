@@ -1,0 +1,2372 @@
+---
+title: "Triangle MS - Analysis"
+author: "Andy"
+format: pdf
+editor: source
+editor_options: 
+  chunk_output_type: console
+---
+
+# Analysis of Triangle MS
+
+## Preliminaries
+
+```{r}
+library(tidyverse)
+library(Rmisc)
+library(psycho)
+library(lattice)
+library(psycho)
+library(ggpubr)
+library(emmeans)
+library(ez)
+library(patchwork)
+library(effectsize)
+library(xlsx)
+library(seewave)
+library(tuneR)
+library(Hmisc)
+library(ggrepel)
+library(ggprism)
+library(afex)
+library(plotrix)
+library(grid)
+library(car)
+library(rstatix)
+library(lme4)
+library(crayon)
+library(boot)
+# library(httpgd)
+```
+
+## Data Prep
+
+### Data Load
+
+```{r}
+#CRM Data 
+dir_crm <- dir("data_F2024/", pattern = "CRM_")
+
+crm_fulltri <- read_csv(paste0("data_F2024/",dir_crm[1]))
+crm_split712 <- read_csv(paste0("data_F2024/",dir_crm[4]))
+crm_split16 <- read_csv(paste0("data_F2024/",dir_crm[3]))
+crm_split14 <- read_csv(paste0("data_F2024/",dir_crm[2]))
+
+#Annoyance Data
+dir_annoy <- dir("data_F2023/", pattern = "Annoy_")
+
+annoy_fulltri <- read_csv(paste0("data_F2023/",dir_annoy[1]))
+annoy_split712 <- read_csv(paste0("data_F2023/",dir_annoy[4]))
+annoy_split16 <- read_csv(paste0("data_F2023/",dir_annoy[3]))
+annoy_split14 <- read_csv(paste0("data_F2023/",dir_annoy[2]))
+```
+
+### Data Cleanup
+
+#### Detection x Speech
+
+```{r}
+# CRM -> regular dprime (zH) - (zFa)
+
+## CRM_FullTri ----
+{
+{
+
+selected_crmfulltri <- crm_fulltri %>% 
+  distinct(participant) %>%
+  arrange(participant) %>% 
+  slice(1:35)
+
+crm_fulltri <- crm_fulltri %>% 
+  filter(participant %in% selected_crmfulltri$participant)
+  
+subj_env_snr <- aggregate(list(crm_fulltri$miss, crm_fulltri$hit, crm_fulltri$cr, crm_fulltri$fa),by=list(crm_fulltri$participant, crm_fulltri$snr, crm_fulltri$env), FUN=sum)
+
+
+#rename columns
+(colnames(subj_env_snr) <- c("participant", "snr", "env", "miss", "hit", "cr", "fa"))
+
+subj_fa_cr <-subset(subj_env_snr,env=="silence")
+
+#subset the data for hit and misses (i.e. getting rid of the silence)
+subj_hit_miss <-subset(subj_env_snr,env!="silence")
+
+#currently the subj_hit_miss has no fa or cr information.
+#the below loop adds it in
+for (subj in unique(subj_hit_miss$participant)){
+  subj_hit_miss$fa[subj_hit_miss$participant==subj]<- subj_fa_cr$fa[subj_fa_cr$participant==subj]
+  subj_hit_miss$cr[subj_hit_miss$participant==subj]<- subj_fa_cr$cr[subj_fa_cr$participant==subj]
+  
+}
+
+subj_hit_miss
+
+
+#now add calculate dprime per row
+
+for (row in 1:nrow(subj_hit_miss)){
+  subj_hit_miss[row,8]<- dprime(subj_hit_miss[row,"hit"], 
+                                (subj_hit_miss[row,"fa"]/12), 
+                                subj_hit_miss[row,"miss"],
+                                (subj_hit_miss[row,"cr"]/12), n_targets = 9, 
+                                n_distractors = 108
+                                )[[1]]
+}
+
+#rename the new column as dprime
+names(subj_hit_miss)[8]<-"dprime"
+#name it something that makes sense and is more intuitive to type!
+
+
+
+}
+
+dprime_fulltri <- subj_hit_miss
+#we now have a df of env,snr,participant hit, misses, cr, and fa
+
+summary(dprime_fulltri)
+
+
+dprime_fulltri -> dprime_fulltri_m 
+
+for (i in 1:length(dprime_fulltri_m$participant)) {
+  dprime_fulltri_m$HITrate_m[i] <- (dprime_fulltri_m$hit[i] / (dprime_fulltri_m$hit[i] + dprime_fulltri_m$miss[i]))
+  dprime_fulltri_m$FArate_m[i] <- (dprime_fulltri_m$fa[i] / (dprime_fulltri_m$fa[i] + dprime_fulltri_m$cr[i]))
+  
+  
+  dprime_fulltri_m$zH[i] <- qnorm(dprime_fulltri_m$HITrate_m[i])
+  dprime_fulltri_m$zF[i] <- qnorm(dprime_fulltri_m$FArate_m[i])
+  
+  dprime_fulltri_m$dprime_m[i] <- (dprime_fulltri_m$zH[i] - dprime_fulltri_m$zF[i])
+}
+
+
+
+dprime_fulltri <- dprime_fulltri_m
+
+#remove participants who did not do the detection task correctly (if temp 12 empty, then skip step)
+# dprime_fulltri %>% 
+#   group_by(participant) %>% 
+#   dplyr::summarise(across(c(hit, fa, cr, miss, dprime), sum)) -> temp11
+# 
+# temp11 %>%
+#   filter(dprime <= 0) -> temp12
+# 
+# unique(temp12$participant) -> temp13
+# 
+# for(y in 1:length(temp13)) {
+#   dprime_fulltri %>% 
+#     filter(participant != temp13[y]) -> dprime_fulltri
+# }
+
+
+dprime_fulltri$SnrEnv = as.factor(paste(dprime_fulltri$snr,dprime_fulltri$env))
+fulltri_det_vis <-summarySE(dprime_fulltri,measurevar="dprime",groupvars=c("SnrEnv"))
+fulltri_det_vis<-separate(fulltri_det_vis,SnrEnv,c("snr","env"),sep=" ")
+
+
+#basic plotting
+
+positions_det_fulltri <- c("-18dB","-21dB","-24dB","-27dB", "-30dB", "-33dB")
+
+fulltri_det_vis$numSNR[fulltri_det_vis$snr=="-30dB"]<-as.numeric(-30)
+fulltri_det_vis$numSNR[fulltri_det_vis$snr=="-33dB"]<-as.numeric(-33)
+fulltri_det_vis$numSNR[fulltri_det_vis$snr=="-18dB"]<-as.numeric(-18)
+fulltri_det_vis$numSNR[fulltri_det_vis$snr=="-21dB"]<-as.numeric(-21)
+fulltri_det_vis$numSNR[fulltri_det_vis$snr=="-24dB"]<-as.numeric(-24)
+fulltri_det_vis$numSNR[fulltri_det_vis$snr=="-27dB"]<-as.numeric(-27)
+fulltri_det_vis$numSNR<-as.numeric(fulltri_det_vis$numSNR)
+
+fulltri_det_vis$level <- as.factor(c(6,6,5,5,4,4,3,3,2,2,1,1))
+
+# dprime_fulltri %>% filter(fa == 0) %>% 
+#   summarise("Bad_Pat" = unique(participant)) -> bad_part_fulltri
+# bad_part_fulltri <- as.list(bad_part_fulltri)
+# 
+# crm_fulltri[!crm_fulltri$participant %in% bad_part_fulltri$Bad_Pat,] -> crm_fulltri
+
+# for(y in 1:length(temp13)) {
+#   crm_fulltri %>% 
+#     filter(participant != temp13[y]) -> crm_fulltri
+# }
+
+crm_fulltri$SnrEnv = as.factor(paste(crm_fulltri$snr,crm_fulltri$env)) 
+
+plot_dat_fulltri <- summarySE(crm_fulltri,measurevar="CRMhit",groupvars=c("SnrEnv"))
+plot_dat_fulltri_onset <- summarySE(crm_fulltri,measurevar="CRMhit",groupvars=c("SnrEnv", "tone_onset"))
+
+plot_dat_fulltri <- separate(plot_dat_fulltri,SnrEnv,c("snr","env"),sep=" ")
+plot_dat_fulltri_onset <- separate(plot_dat_fulltri_onset,SnrEnv,c("snr","env"),sep=" ")
+
+positions_speech_fulltri <- c("silence","-33dB","-30dB","-27dB","-24dB","-21dB","-18dB")
+
+
+plot_dat_fulltri$numSNR <- c(-18, -18,-21,-21,-24,-24,-27,-27,-30,-30,-33,-33,-36)
+plot_dat_fulltri_onset$numSNR <- c(-18,-18,-18,-18,-18,-18,
+                                   -21,-21,-21,-21,-21,-21,
+                                   -24,-24,-24,-24,-24,-24,
+                                   -27,-27,-27,-27,-27,-27,
+                                   -30,-30,-30,-30,-30,-30,
+                                   -33,-33,-33,-33,-33,-33,
+                                   -36,-36,-36)
+
+plot_dat_fulltri$level <- as.factor(c(6,6,5,5,4,4,3,3,2,2,1,1,NA))
+plot_dat_fulltri_onset$level <- as.factor(c(6,6,6,6,6,6,
+                                            5,5,5,5,5,5,
+                                            4,4,4,4,4,4,
+                                            3,3,3,3,3,3,
+                                            2,2,2,2,2,2,
+                                            1,1,1,1,1,1,
+                                            NA,NA,NA))
+
+
+}
+
+
+## CRM_Split712 ----
+{
+{
+  
+selected_crmsplit712 <- crm_split712 %>% 
+  distinct(participant) %>%
+  arrange(participant) %>% 
+  slice(1:35)
+
+crm_split712 <- crm_split712 %>% 
+  filter(participant %in% selected_crmsplit712$participant)
+
+subj_env_snr <- aggregate(list(crm_split712$miss, crm_split712$hit, crm_split712$cr, crm_split712$fa),by=list(crm_split712$participant, crm_split712$snr, crm_split712$env), FUN=sum)
+
+
+#rename columns
+(colnames(subj_env_snr) <- c("participant", "snr", "env", "miss", "hit", "cr", "fa"))
+
+subj_fa_cr <-subset(subj_env_snr,env=="silence")
+
+#subset the data for hit and misses (i.e. getting rid of the silence)
+subj_hit_miss <-subset(subj_env_snr,env!="silence")
+
+
+#currently the subj_hit_miss has no fa or cr information.
+#the below loop adds it in
+for (subj in unique(subj_hit_miss$participant)){
+  subj_hit_miss$fa[subj_hit_miss$participant==subj]<- subj_fa_cr$fa[subj_fa_cr$participant==subj]
+  subj_hit_miss$cr[subj_hit_miss$participant==subj]<- subj_fa_cr$cr[subj_fa_cr$participant==subj]
+  
+}
+
+
+#now add calculate dprime per row
+
+for (row in 1:nrow(subj_hit_miss)){
+  subj_hit_miss[row,8]<- dprime(subj_hit_miss[row,"hit"], 
+                                subj_hit_miss[row,"fa"]/12,
+                                subj_hit_miss[row,"miss"],
+                                subj_hit_miss[row,"cr"]/12,
+                                 n_targets = 9, n_distractors = 108
+                                )[[1]]
+}
+
+#rename the new column as dprime
+names(subj_hit_miss)[8]<-"dprime"
+#name it something that makes sense and is more intuitive to type!
+}
+
+dprime_split712 <- subj_hit_miss
+#we now have a df of env,snr,participant hit, misses, cr, and fa .
+
+summary(dprime_split712)
+
+# dprime_split712 -> dprime_split712_m 
+
+# for (i in 1:length(dprime_split712_m$participant)) {
+#   dprime_split712_m$HITrate_m[i] <- (dprime_split712_m$hit[i] / (dprime_split712_m$hit[i] + dprime_split712_m$miss[i]))
+  
+  
+#   dprime_split712_m$zH[i] <- qnorm(dprime_split712_m$HITrate_m[i])
+#   dprime_split712_m$zF[i] <- qnorm(dprime_split712_m$FArate_m[i])
+  
+#   dprime_split712_m$dprime_m[i] <- (dprime_split712_m$zH[i] - dprime_fulltri_m$zF[i])
+# }
+
+# dprime_split712 <- dprime_split712_m
+
+#remove participants who did not do the detection task correctly 
+dprime_split712 %>% 
+  group_by(participant) %>% 
+  dplyr::summarise(across(c(hit, fa, cr, miss, dprime), sum)) -> temp11
+
+# temp11 %>%
+#   filter(dprime <= 0) -> temp12
+# 
+# temp13 <- unique(temp12$participant)
+
+# for(y in 1:length(temp13)) {
+#   dprime_split712 %>% 
+#     filter(participant != temp13[y]) -> dprime_split712
+# }
+
+
+dprime_split712$SnrEnv = as.factor(paste(dprime_split712$snr,dprime_split712$env))
+split712_det_vis <- summarySE(dprime_split712,measurevar="dprime",groupvars=c("SnrEnv"))
+
+split712_det_vis<-separate(split712_det_vis,SnrEnv,c("snr","env"),sep=" ")
+
+# dprime_split712$cr <- dprime_split712$cr / 12
+# dprime_split712$cr <- dprime_split712$fa / 12
+
+#basic plotting
+
+positions_det_split712 <- c("-18dB","-21dB","-24dB","-27dB", "-30dB", "-33dB")
+
+split712_det_vis$numSNR[split712_det_vis$snr=="-30dB"]<-as.numeric(-30)
+split712_det_vis$numSNR[split712_det_vis$snr=="-33dB"]<-as.numeric(-33)
+split712_det_vis$numSNR[split712_det_vis$snr=="-18dB"]<-as.numeric(-18)
+split712_det_vis$numSNR[split712_det_vis$snr=="-21dB"]<-as.numeric(-21)
+split712_det_vis$numSNR[split712_det_vis$snr=="-24dB"]<-as.numeric(-24)
+split712_det_vis$numSNR[split712_det_vis$snr=="-27dB"]<-as.numeric(-27)
+split712_det_vis$numSNR<-as.numeric(split712_det_vis$numSNR)
+
+split712_det_vis$numSNR <- c(-18,-28,-21,-31,-24,-34,-27,-37,-30,-40,-33,-43)
+
+split712_det_vis$level <- as.factor(c(6,6,5,5,4,4,3,3,2,2,1,1))
+
+# dprime_split712 %>%
+#   filter(fa == 0) %>%
+#   summarise("Bad_Pat" = unique(participant)) -> bad_part_split712
+# bad_part_split712 <- as.list(bad_part_split712)
+
+# crm_split712[!crm_split712$participant %in% bad_part_split712$Bad_Pat,] -> crm_split712
+# 
+# for(y in 1:length(temp13)) {
+#   crm_split712 %>% 
+#     filter(participant != temp13[y]) -> crm_split712
+# }
+
+crm_split712$SnrEnv = as.factor(paste(crm_split712$snr,crm_split712$env))
+
+plot_dat_split712 <- summarySE(crm_split712,measurevar="CRMhit",groupvars=c("SnrEnv"))
+
+plot_dat_split712 <- separate(plot_dat_split712,SnrEnv,c("snr","env"),sep=" ")
+
+positions_speech_split712 <- c("silence","-33dB","-30dB","-27dB","-24dB","-21dB","-18dB")
+
+plot_dat_split712$numSNR <- c(-18,-28,-21,-31,-24,-34,-27,-37,-30,-40,-33,-43,-46)
+
+plot_dat_split712$level <- as.factor(c(6,6,5,5,4,4,3,3,2,2,1,1,NA))
+
+}
+
+## CRM_Split16 ---- 
+{
+{
+
+selected_crm_split16 <- crm_split16 %>% 
+  distinct(participant) %>%
+  arrange(participant) %>% 
+  slice(1:35)
+
+crm_split16 <- crm_split16 %>% 
+  filter(participant %in% selected_crm_split16$participant)
+
+  
+subj_env_snr <- aggregate(list(crm_split16$miss, crm_split16$hit, crm_split16$cr, crm_split16$fa), by=list(crm_split16$participant, crm_split16$snr, crm_split16$env), FUN=sum)
+
+
+#rename columns
+(colnames(subj_env_snr) <- c("participant", "snr", "env", "miss", "hit", "cr", "fa"))
+
+subj_fa_cr <- subset(subj_env_snr,env=="silence")
+
+#subset the data for hit and misses (i.e. getting rid of the silence)
+subj_hit_miss <-subset(subj_env_snr,env!="silence")
+
+
+#currently the subj_hit_miss has no fa or cr information.
+#the below loop adds it in
+for (subj in unique(subj_hit_miss$participant)){
+  subj_hit_miss$fa[subj_hit_miss$participant==subj]<- subj_fa_cr$fa[subj_fa_cr$participant==subj]
+  subj_hit_miss$cr[subj_hit_miss$participant==subj]<- subj_fa_cr$cr[subj_fa_cr$participant==subj]
+  
+}
+
+subj_hit_miss
+
+
+#now add calculate dprime per row
+
+for (row in 1:nrow(subj_hit_miss)){
+  subj_hit_miss[row,8]<- dprime(subj_hit_miss[row,"hit"], 
+                                subj_hit_miss[row,"fa"]/12,
+                                subj_hit_miss[row,"miss"],
+                                subj_hit_miss[row,"cr"]/12,
+                                 n_targets = 9, n_distractors = 108
+                                )[[1]]
+}
+
+#rename the new column as dprime
+names(subj_hit_miss)[8]<-"dprime"
+#name it something that makes sense and is more intuitive to type!
+}
+
+dprime_split16 <- subj_hit_miss
+#we now have a df of env,snr,participant hit, misses, cr, and fa .
+
+#remove participants who did not do the detection task correctly 
+# dprime_split16 %>% group_by(participant) %>% dplyr::summarise(across(c(hit, fa, cr, miss, dprime), sum)) -> temp11
+# 
+# temp11 %>%
+#   filter(dprime <= 0) -> temp12
+# 
+# unique(temp12$participant) -> temp13
+# 
+# for(y in 1:length(temp13)) {
+#   dprime_split16 %>% 
+#     filter(participant != temp13[y]) -> dprime_split16
+# }
+
+
+summary(dprime_split16)
+
+dprime_split16 -> dprime_split16_m 
+
+for (i in 1:length(dprime_split16_m$participant)) {
+  dprime_split16_m$HITrate_m[i] <- (dprime_split16_m$hit[i] / (dprime_split16_m$hit[i] + dprime_split16_m$miss[i]))
+  dprime_split16_m$FArate_m[i] <- (dprime_split16_m$fa[i] / (dprime_split16_m$fa[i] + dprime_split16_m$cr[i]))
+  
+  
+  dprime_split16_m$zH[i] <- qnorm(dprime_split16_m$HITrate_m[i])
+  dprime_split16_m$zF[i] <- qnorm(dprime_split16_m$FArate_m[i])
+  
+  dprime_split16_m$dprime_m[i] <- (dprime_split16_m$zH[i] - dprime_split16_m$zF[i])
+}
+
+dprime_split16 <- dprime_split16_m
+
+#remove participants who did not do the detection task correctly 
+# dprime_split16 %>%
+#   filter(
+#     fa != 0
+#   ) -> dprime_split16
+
+dprime_split16$SnrEnv = as.factor(paste(dprime_split16$snr,dprime_split16$env))
+split16_det_vis <-summarySE(dprime_split16,measurevar="dprime",groupvars=c("SnrEnv"))
+
+split16_det_vis<-separate(split16_det_vis,SnrEnv,c("snr","env"),sep=" ")
+
+# dprime_split16$cr <- dprime_split16$cr / 12
+# dprime_split16$cr <- dprime_split16$fa / 12
+
+#basic plotting
+
+positions_det_split16 <- c("-18dB","-21dB","-24dB","-27dB", "-30dB", "-33dB")
+
+split16_det_vis$numSNR[split16_det_vis$snr=="-30dB"]<-as.numeric(-30)
+split16_det_vis$numSNR[split16_det_vis$snr=="-33dB"]<-as.numeric(-33)
+split16_det_vis$numSNR[split16_det_vis$snr=="-18dB"]<-as.numeric(-18)
+split16_det_vis$numSNR[split16_det_vis$snr=="-21dB"]<-as.numeric(-21)
+split16_det_vis$numSNR[split16_det_vis$snr=="-24dB"]<-as.numeric(-24)
+split16_det_vis$numSNR[split16_det_vis$snr=="-27dB"]<-as.numeric(-27)
+split16_det_vis$numSNR<-as.numeric(split16_det_vis$numSNR)
+
+split16_det_vis$numSNR <- c(-18,(-18-0.45),-21, (-21-0.45),-24,(-24-0.45),-27,(-27-.45),-30,(-30-.45),-33,(-33-.45))
+
+split16_det_vis$level <- as.factor(c(6,6,5,5,4,4,3,3,2,2,1,1))
+
+# dprime_split16_m %>% filter(fa == 0) %>% summarise("Bad_Pat" = unique(participant)) -> bad_part_split16
+# bad_part_split16 <- as.list(bad_part_split16)
+# 
+# crm_split16[!crm_split16$participant %in% bad_part_split712$Bad_Pat,] -> crm_split16
+
+# 
+# for(y in 1:length(temp13)) {
+#   crm_split16 %>% 
+#     filter(participant != temp13[y]) -> crm_split16
+# }
+
+
+crm_split16$SnrEnv = as.factor(paste(crm_split16$snr,crm_split16$env))
+
+plot_dat_split16 <- summarySE(crm_split16,measurevar="CRMhit",groupvars=c("SnrEnv"))
+
+plot_dat_split16 <- separate(plot_dat_split16,SnrEnv,c("snr","env"),sep=" ")
+
+plot_dat_split16$numSNR <- c(-18, -18.45,-21,-21.45,-24,-24.45,-27,-27.45,-30,-30.45,-33,-33.45,-36)
+
+plot_dat_split16$level <- as.factor(c(6,6,5,5,4,4,3,3,2,2,1,1,NA))
+
+positions_speech_split16 <- c("silence","-33dB","-30dB","-27dB","-24dB","-21dB","-18dB")
+
+
+}
+
+## CRM_Split14 ----
+{
+{
+  
+selected_crmsplit14 <- crm_split14 %>% 
+  distinct(participant) %>%
+  arrange(participant) %>% 
+  slice(1:35)
+
+crm_split14 <- crm_split14 %>% 
+  filter(participant %in% selected_crmsplit14$participant)
+
+subj_env_snr <- aggregate(list(crm_split14$miss, crm_split14$hit, crm_split14$cr, crm_split14$fa),by=list(crm_split14$participant, crm_split14$snr, crm_split14$env), FUN=sum)
+
+#rename columns
+(colnames(subj_env_snr) <- c("participant", "snr", "env", "miss", "hit", "cr", "fa"))
+
+subj_fa_cr <- subset(subj_env_snr, env=="silence")
+
+#subset the data for hit and misses (i.e. getting rid of the silence)
+subj_hit_miss <- subset(subj_env_snr, env!="silence")
+
+
+#currently the subj_hit_miss has no fa or cr information.
+#the below loop adds it in
+for(subj in unique(subj_hit_miss$participant)){
+  subj_hit_miss$fa[subj_hit_miss$participant==subj] <- subj_fa_cr$fa[subj_fa_cr$participant==subj]
+  subj_hit_miss$cr[subj_hit_miss$participant==subj] <- subj_fa_cr$cr[subj_fa_cr$participant==subj]
+}
+
+#now add calculate dprime per row
+
+for(row in 1:nrow(subj_hit_miss)){
+  subj_hit_miss[row,8]<- dprime(subj_hit_miss[row,"hit"], 
+                                subj_hit_miss[row,"fa"]/12,
+                                subj_hit_miss[row,"miss"],
+                                subj_hit_miss[row,"cr"]/12,
+                                 n_targets = 9, n_distractors = 108
+                                )[[1]]
+}
+
+#rename the new column as dprime
+names(subj_hit_miss)[8]<-"dprime"
+#name it something that makes sense and is more intuitive to type!
+}
+
+dprime_split14 <- subj_hit_miss
+#we now have a df of env,snr,participant hit, misses, cr, and fa .
+
+summary(dprime_split14)
+
+
+#remove participants who did not do the detection task correctly 
+dprime_split14 %>% 
+  group_by(participant) %>% 
+  dplyr::summarise(across(c(hit, fa, cr, miss, dprime), sum)) -> temp11
+
+# temp11 %>%
+#   filter(dprime <= 0) -> temp12
+
+# temp13 <- unique(temp12$participant)
+
+# for(y in 1:length(temp13)) {
+#   dprime_split14 %>% 
+#     filter(participant != temp13[y]) -> dprime_split14
+
+
+dprime_split14$SnrEnv = as.factor(paste(dprime_split14$snr,dprime_split14$env))
+split14_det_vis <- summarySE(dprime_split14,measurevar="dprime",groupvars=c("SnrEnv"))
+
+split14_det_vis<-separate(split14_det_vis,SnrEnv,c("snr","env"),sep=" ")
+
+# dprime_split712$cr <- dprime_split712$cr / 12
+# dprime_split712$cr <- dprime_split712$fa / 12
+
+#basic plotting
+
+positions_det_split14 <- c("-18dB","-21dB","-24dB","-27dB", "-30dB", "-33dB")
+
+split14_det_vis$numSNR[split14_det_vis$snr=="-30dB"]<-as.numeric(-30)
+split14_det_vis$numSNR[split14_det_vis$snr=="-33dB"]<-as.numeric(-33)
+split14_det_vis$numSNR[split14_det_vis$snr=="-18dB"]<-as.numeric(-18)
+split14_det_vis$numSNR[split14_det_vis$snr=="-21dB"]<-as.numeric(-21)
+split14_det_vis$numSNR[split14_det_vis$snr=="-24dB"]<-as.numeric(-24)
+split14_det_vis$numSNR[split14_det_vis$snr=="-27dB"]<-as.numeric(-27)
+split14_det_vis$numSNR<-as.numeric(split14_det_vis$numSNR)
+
+split14_det_vis$numSNR <- c(
+  -18,(-18 + -.75),
+  -21,(-21 + -.75),
+  -24,(-24 + -.75),
+  -27,(-27 + -.75),
+  -30,(-30 + -.75),
+  -33,(-33 + -.75))
+
+split14_det_vis$level <- as.factor(c(6,6,5,5,4,4,3,3,2,2,1,1))
+
+dprime_split14 %>%
+  filter(fa == 0) %>%
+  summarise("Bad_Pat" = unique(participant)) -> bad_part_split14
+bad_part_split14 <- as.list(bad_part_split14)
+
+crm_split14[!crm_split14$participant %in% bad_part_split14$Bad_Pat,] -> crm_split14
+# 
+# for(y in 1:length(temp13)) {
+#   crm_split14 %>% 
+#     filter(participant != temp13[y]) -> crm_split14
+# }
+
+crm_split14$SnrEnv = as.factor(paste(crm_split14$snr,crm_split14$env))
+
+plot_dat_split14 <- summarySE(crm_split14,measurevar="CRMhit",groupvars=c("SnrEnv"))
+
+plot_dat_split14 <- separate(plot_dat_split14,SnrEnv,c("snr","env"),sep=" ")
+
+positions_speech_split14 <- c("silence","-33dB","-30dB","-27dB","-24dB","-21dB","-18dB")
+
+plot_dat_split14$numSNR <- c(
+  -18,(-18 + -0.75),
+  -21,(-21 + -0.75),
+  -24,(-24 + -0.75),
+  -27,(-27 + -0.75),
+  -30,(-30 + -0.75),
+  -33,(-33 + -0.75),-46)
+
+plot_dat_split14$level <- as.factor(c(6,6,5,5,4,4,3,3,2,2,1,1,NA))
+}
+
+```
+
+#### Annoyance
+
+The Wald *confidence interval* for a proportion ( p ) is calculated as:
+
+\[ \text{CI} = p \pm z \cdot \sqrt{\frac{p(1-p)}{n}} \]
+
+Where: - ( p ) is the proportion of successes (( p = \frac{k}{n} )), - ( z ) is the critical value from the standard normal distribution (e.g., 1.96 for a 95% confidence interval), - ( n ) is the total number of trials, - ( \sqrt{\frac{p(1-p)}{n}} ) is the standard error of the proportion.
+
+```{r}
+{
+#Change the error bars of the annoyance 
+#Full Tri
+
+selected_annoy_fulltri <- annoy_fulltri %>% 
+  distinct(participant) %>%
+  arrange(participant) %>% 
+  slice(1:35)
+
+annoy_fulltri <- annoy_fulltri %>% 
+  filter(participant %in% selected_annoy_fulltri$participant)
+
+annoy_fulltri$SnrEnv = as.factor(paste(annoy_fulltri$Tone_Choice_snr,annoy_fulltri$Tone_Choice_env))
+line_plot_annoy_fulltri<-as.data.frame(table(annoy_fulltri$SnrEnv))
+
+line_plot_annoy_fulltri<-separate(line_plot_annoy_fulltri,Var1,c("snr","env"),sep=" ")
+
+line_plot_annoy_fulltri$snr <- factor(line_plot_annoy_fulltri$snr, c("-18dB",
+                                                         "-21dB",
+                                                         "-24dB",
+                                                         "-27dB",
+                                                         "-30dB",
+                                                         "-33dB"))
+
+
+percentage_annoy_fulltri = (line_plot_annoy_fulltri$Freq/(sum(line_plot_annoy_fulltri$Freq)/6))#*100
+line_plot_annoy_fulltri <- data.frame(line_plot_annoy_fulltri, percentage_annoy_fulltri)
+
+line_plot_annoy_fulltri$numSNR <- c(-44,-44,-47,-47,-50,-50,-53,-53,-56,-56,-59,-59)
+
+line_plot_annoy_fulltri$level <- as.factor(c(6,6,5,5,4,4,3,3,2,2,1,1))
+
+
+#Split 7-12
+selected_annoy_split712 <- annoy_split712 %>% 
+  distinct(participant) %>%
+  arrange(participant) %>% 
+  slice(1:35)
+
+annoy_split712 <- annoy_split712 %>% 
+  filter(participant %in% selected_annoy_split712$participant)
+
+
+annoy_split712$SnrEnv = as.factor(paste(annoy_split712$Tone_Choice_snr,annoy_split712$Tone_Choice_env))
+line_plot_annoy_split712<-as.data.frame(table(annoy_split712$SnrEnv))
+
+line_plot_annoy_split712<-separate(line_plot_annoy_split712,Var1,c("snr","env"),sep=" ")
+
+line_plot_annoy_split712$snr <- factor(line_plot_annoy_split712$snr, c("-18dB",
+                                                         "-21dB",
+                                                         "-24dB",
+                                                         "-27dB",
+                                                         "-30dB",
+                                                         "-33dB"))
+
+percentage_annoy_split712 = (line_plot_annoy_split712$Freq/(sum(line_plot_annoy_split712$Freq)/6))#*100
+line_plot_annoy_split712 <- data.frame(line_plot_annoy_split712, percentage_annoy_split712)
+
+line_plot_annoy_split712$numSNR <- c(-44,-54,-47,-57,-50,-60,-53,-63,-56,-66,-59,-69)
+
+line_plot_annoy_split712$level <- as.factor(c(6,6,5,5,4,4,3,3,2,2,1,1))
+
+
+
+#Split 1-6
+selected_annoy_split16 <- annoy_split16 %>% 
+  distinct(participant) %>%
+  arrange(participant) %>% 
+  slice(1:35)
+
+annoy_split16 <- annoy_split16 %>% 
+  filter(participant %in% selected_annoy_split16$participant)
+
+annoy_split16$SnrEnv = as.factor(paste(annoy_split16$Tone_Choice_snr,annoy_split16$Tone_Choice_env))
+line_plot_annoy_split16<-as.data.frame(table(annoy_split16$SnrEnv))
+
+line_plot_annoy_split16<-separate(line_plot_annoy_split16,Var1,c("snr","env"),sep=" ")
+
+line_plot_annoy_split16$snr <- factor(line_plot_annoy_split16$snr, c("-18dB",
+                                                         "-21dB",
+                                                         "-24dB",
+                                                         "-27dB",
+                                                         "-30dB",
+                                                         "-33dB"))
+
+
+percentage_annoy_split16 = (line_plot_annoy_split16$Freq/(sum(line_plot_annoy_split16$Freq)/6))#*100
+line_plot_annoy_split16 <- data.frame(line_plot_annoy_split16, percentage_annoy_split16)
+
+line_plot_annoy_split16$numSNR <- c(
+  -44,(-44-0.45),
+  47, (-47-0.45),
+  -50,(-50-0.45),
+  -53,(-53-.45),
+  -56,(-56-.45),
+  -59,(-59-.45)
+  )
+
+line_plot_annoy_split16$level <- as.factor(c(6,6,5,5,4,4,3,3,2,2,1,1))
+
+
+#Split 1-4
+selected_annoy_split14 <- annoy_split14 %>% 
+  distinct(participant) %>%
+  arrange(participant) %>% 
+  slice(1:35)
+
+annoy_split14 <- annoy_split14 %>% 
+  filter(participant %in% selected_annoy_split14$participant)
+
+annoy_split14$SnrEnv = as.factor(paste(annoy_split14$Tone_Choice_snr,annoy_split14$Tone_Choice_env))
+line_plot_annoy_split14<-as.data.frame(table(annoy_split14$SnrEnv))
+
+line_plot_annoy_split14<-separate(line_plot_annoy_split14,Var1,c("snr","env"),sep=" ")
+
+line_plot_annoy_split14$snr <- factor(line_plot_annoy_split14$snr, c("-18dB",
+                                                         "-21dB",
+                                                         "-24dB",
+                                                         "-27dB",
+                                                         "-30dB",
+                                                         "-33dB"))
+
+
+percentage_annoy_split14 = (line_plot_annoy_split14$Freq/(sum(line_plot_annoy_split14$Freq)/6))#*100
+line_plot_annoy_split14 <- data.frame(line_plot_annoy_split14, percentage_annoy_split14)
+
+line_plot_annoy_split14$numSNR <- c(
+  -44,(-44-0.45),
+   47, (-47-0.45),
+  -50,(-50-0.45),
+  -53,(-53-.45),
+  -56,(-56-.45),
+  -59,(-59-.45)
+  )
+
+line_plot_annoy_split14$level <- as.factor(c(6,6,5,5,4,4,3,3,2,2,1,1))
+
+}
+```
+
+## Visualizations
+
+### Detection - Vis
+
+```{r}
+# Full tri ---- 
+# pdf("dprimesnrXenv.pdf",width=8, height = 5)
+(ggplot(fulltri_det_vis, aes(x=numSNR, y=dprime, group=env, color=env)) + 
+  geom_line(linetype="longdash") +
+  geom_point(size = 5, aes(shape = env)) + 
+  scale_shape_manual(values=c(15,17)) +
+  geom_errorbar(aes(ymin=dprime-se, ymax=dprime+se), width=.2) +
+  scale_color_manual(values=c('black','purple3')) +
+  geom_text_repel(aes(label = level), force = 0, nudge_x = 0, nudge_y = 0.004, show.legend = F, colour = 'white') + #x=.7, y=-.07
+  theme_classic() + 
+  scale_x_continuous(limits = c(-45,-15), 
+                     breaks = seq(-45,-15,5),
+                     guide = "prism_minor", 
+                     minor_breaks = seq(-45,-15,1)) +
+  ylim(0,2.5) +
+  # xlim(-45,-15) +
+  theme(legend.position = "none") +
+  labs(x = "Signal-to-Noise Ratio (dB)", 
+       y = expression(atop("Sound Set (a)", atop("Tri-"[Full], "Flat-"[Std])))) +
+  theme(plot.title = element_text(hjust=0.5), axis.title.x = element_blank(), axis.text.x = element_blank(), plot.subtitle = element_text(hjust = 0.5), axis.title.y = element_text(angle = 0, vjust=0.5, size = 12, face = 'bold')) +
+  # theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  # labs(title = bqoute("Tri-" ~ ["Full"] ~ " v " ~ "Flat-" ~ ["Std"])) +
+  ggtitle("Tone Detection (d')"
+          #, subtitle = "CRM (1)"
+          )
+   -> crm_fulltri_plot)
+
+# svg("vis/crm_fulltri_plot.svg",width=8, height = 5)
+# crm_fulltri_plot
+# dev.off()
+
+
+# Split 7-12 ----
+# pdf("dprimesnrXenv.pdf",width=8, height = 5)
+
+(ggplot(split712_det_vis, aes(x=numSNR, y=dprime, group=env, color=env)) + 
+  geom_line(linetype="longdash") +
+  geom_errorbar(aes(ymin=dprime-se, ymax=dprime+se), width=.2) +
+  geom_point(size = 5, aes(colour = env, fill = env, shape = env)) +
+  scale_shape_manual(values=c(15,24)) +
+  scale_colour_manual(values = c('black','blue3')) +
+  scale_fill_manual(values=c('black','white')) +
+  geom_text_repel(data = split712_det_vis %>% filter(env == "Flat"),
+                  aes(label = level),
+                  force = 0,
+                  nudge_x = 0,
+                  nudge_y = 0.004,
+                  color = 'white') +
+  geom_text_repel(data = split712_det_vis %>% filter(env == "PercTri"),
+                   aes(label = level),
+                   force = 0,
+                   nudge_x = 0,
+                   nudge_y = 0.004,
+                   color = 'blue3') +
+  # scale_shape_manual(values = c(16,16)) +
+  theme_classic() + 
+  # scale_x_continuous(breaks=c(-18, -21,-24,-27,-28,-30,-31,-33,-34,-37,-40,-43),labels=positions_annoy_split712) +
+  scale_x_continuous(limits = c(-45,-15), 
+                     breaks = seq(-45,-15,5),
+                     guide = "prism_minor", 
+                     minor_breaks = seq(-45,-15,1)) +
+  # geom_text(aes(x=numSNR, y=0, label=paste0(numSNR-10, "dB")), color = "grey", size = 3) +
+  ylim(0,2.5) +
+  # xlim(-45,-15) +
+  theme(legend.position = "none", axis.title.y = element_text(angle = 0, vjust = .5, size = 12)) +
+  #theme(axis.title.y=element_blank()) +
+  # theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Signal-to-Noise Ratio (dB)"
+       , y = expression(atop("Sound Set (c)", atop("Tri-"[7:12], "Flat-"[Std])))
+       ) -> crm_split712_plot)
+
+# svg("vis/crm_split712_plot.svg",width=8, height = 5)
+# crm_split712_plot
+# dev.off()
+
+
+# Split 1-6 ---- 
+# pdf("dprimesnrXenv.pdf",width=8, height = 5)
+(ggplot(split16_det_vis, aes(x=numSNR, y=dprime, group=env, color=env)) + 
+  geom_line(linetype="longdash") +
+  geom_errorbar(aes(ymin=dprime-se, ymax=dprime+se), width=.2) +
+  geom_point(size = 5, aes(colour = env, fill = env, shape = env)) +
+  scale_shape_manual(values=c(15,24)) +
+  scale_fill_manual(values=c('black','white')) +
+  scale_colour_manual(values=c('black','red3')) +
+  geom_text_repel(data = split16_det_vis %>% filter(env == "Flat"),
+                  aes(label = level),
+                  force = 0,
+                  nudge_x = 0,
+                  nudge_y = 0.004,
+                  color = 'white') +
+  geom_text_repel(data = split16_det_vis %>% filter(env == "PercTri"),
+                   aes(label = level),
+                   force = 0,
+                   nudge_x = 0,
+                   nudge_y = 0.004,
+                   color = 'red') +
+  scale_x_continuous(limits = c(-45,-15), 
+                     breaks = seq(-45,-15,5),
+                     guide = "prism_minor", 
+                     minor_breaks = seq(-45,-15,1)) +
+  theme_classic() +
+  theme(legend.position = "none") +
+  theme(
+    # axis.title.x = element_blank(), 
+    # axis.text.x = element_blank(), 
+    axis.title.y = element_text(angle = 0, vjust = 0.5, size = 12)
+    ) +
+  # theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ylim(0,2.5) +
+  # xlim(-45,-15) +
+  labs(x = "Signal-to-Noise Ratio (dB)", 
+       y = expression(atop("Sound Set (b)", atop("Tri-"[1:6], "Flat-"[Std])))
+       ) -> crm_split16_plot)
+
+# svg("vis/crm_split16_plot.svg",width=8, height = 5)
+# crm_split16_plot                                                                                       
+# dev.off()
+
+# Split 14 ---- 
+# pdf("dprimesnrXenv.pdf",width=8, height = 5)
+(ggplot(split14_det_vis, aes(x=numSNR, y=dprime, group=env, color=env)) + 
+  geom_line(linetype="longdash") +
+  geom_point(size = 5, aes(shape = env)) + 
+  scale_shape_manual(values=c(15,17)) +
+  geom_errorbar(aes(ymin=dprime-se, ymax=dprime+se), width=.2) +
+  scale_color_manual(values=c('black','gray60')) +
+  geom_text_repel(aes(label = level), force = 0, nudge_x = 0, nudge_y = 0.004, show.legend = F, colour = 'white') + #x=.7, y=-.07
+  theme_classic() + 
+  scale_x_continuous(limits = c(-45,-15), 
+                     breaks = seq(-45,-15,5),
+                    #  guide = "prism_minor", 
+                     minor_breaks = seq(-45,-15,1)) +
+  ylim(0,3) +
+  # xlim(-45,-15) +
+  theme(legend.position = "none") +
+  labs(x = "Signal-to-Noise Ratio (dB)", 
+       y = expression(atop("Sound Set (appendix a)", atop("Tri-"[1:4], "Flat-"[Std])))) +
+  theme(plot.title = element_text(hjust=0.5), 
+        # axis.title.x = element_blank(), 
+        # axis.text.x = element_blank(), 
+        plot.subtitle = element_text(hjust = 0.5), 
+        axis.title.y = element_text(angle = 0, 
+                                    vjust=0.5, 
+                                    size = 12, 
+                                    face = 'bold')) 
+  # theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  # labs(title = bqoute("Tri-" ~ ["Full"] ~ " v " ~ "Flat-" ~ ["Std"])) +
+  # ggtitle("Tone Detection (d')"
+  #         #, subtitle = "CRM (1)"
+  #         )
+   -> crm_split14_plot)
+
+# svg("vis/crm_fulltri_plot.svg",width=8, height = 5)
+# crm_fulltri_plot
+# dev.off()
+
+
+
+(crm_fulltri_plot + crm_split16_plot + crm_split712_plot) #1250 x 500
+```
+
+### Speech - Vis
+
+```{r}
+# FullTri ---- 
+(plot_dat_fulltri %>% 
+    filter(env != "silence") %>% 
+    ggplot(aes(x=numSNR, y=CRMhit*100, group=env, color=env)) +
+    geom_line(linetype="longdash") +
+    geom_hline(yintercept=(plot_dat_fulltri$CRMhit[plot_dat_fulltri$env == "silence"]*100), linetype = "dashed", color = "dimgray") +
+    geom_errorbar(
+      # data = plot_dat_fulltri, 
+      aes(ymin=(CRMhit-se)*100, ymax=(CRMhit+se)*100),
+                  width=.2) + 
+    geom_point(stat = "identity", size = 5, aes(colour = env, fill = env, shape = env)) + #orignal is size =5
+    scale_shape_manual(values=c(15,24)) +
+    geom_text_repel(data = plot_dat_fulltri %>% filter(env == "Flat"),
+                  aes(label = level),
+                  force = 0,
+                  nudge_x = 0,
+                  nudge_y = 0.004,
+                  color = 'white') +
+    geom_text_repel(data = plot_dat_fulltri %>% filter(env == "PercTri"),
+                   aes(label = level),
+                   force = 0,
+                   nudge_x = 0,
+                   nudge_y = 0.004,
+                   color = 'white') +
+ 
+    # geom_text_repel(aes(label = level), 
+    #                 nudge_y = -2,
+    #                 nudge_x = -1) + 
+    
+   # ggtitle("CRMv2 - Performance FullTri - Low SNRs") +
+    xlab("Signal-to-Noise Ratio (dB)") +
+    ylab("Proportion Correct") +
+    ggtitle("Speech Comprehension (% Correct)"
+            #, subtitle = "CRM (1)"
+            ) +
+    scale_color_manual(values=c('black','purple3'
+                                #,"cadetblue3"
+                                )) +
+    scale_fill_manual(values=c('black','purple3'
+                                #,"cadetblue3"
+                                ))+
+    scale_x_continuous(limits = c(-45,-15), 
+                     breaks = seq(-45,-15,5),
+                     guide = "prism_minor", 
+                     minor_breaks = seq(-45,-15,1)) +
+    scale_y_continuous(
+       breaks = seq(0,100,by = 25),
+       minor_breaks = seq(0,100, by=5),
+       guide = "prism_minor",
+       limits = c(0,100)
+     ) +
+    # scale_x_discrete(limits = positions_speech_fulltri) +
+    theme_classic() +
+    theme(legend.position = "none") +
+    theme(axis.title.y=element_blank(), plot.title = element_text(hjust=0.5), axis.title.x = element_blank(), axis.text.x = element_blank(), plot.subtitle = element_text(hjust = 0.5)) 
+    # theme (axis.text.x = element_text(angle = 45, hjust = 1)) +
+     -> speech_fulltri_plot)
+
+# svg("vis/speech_fulltri_plot.svg",width=8, height = 5)
+# speech_fulltri_plot
+# dev.off()
+
+# Split 7-12 ---- 
+
+(plot_dat_split712 %>% 
+   filter(env != "silence") %>% 
+   ggplot(aes(x=numSNR, y=CRMhit*100, group=env, color = env)) +
+   geom_line(linetype="longdash") +
+   geom_hline(yintercept=(mean(crm_split712$CRMhit[crm_split712$env == "silence"]) * 100), linetype = "dashed", color = "dimgray") + 
+   geom_point(stat = "identity", size = 5, aes(colour = env, fill = env, shape = env)) + #remeber size 5 normal
+   scale_shape_manual(values=c(15,24)) +
+   
+   # geom_text_repel(aes(label = level), 
+   #                  nudge_y = 2,
+   #                  nudge_x = 0.5) +
+   
+   scale_fill_manual(values=c('black','white')) +
+   scale_color_manual(values=c('black','blue3')) +
+   geom_text_repel(data = plot_dat_split712 %>% filter(env == "Flat"),
+                  aes(label = level),
+                  force = 0,
+                  nudge_x = 0,
+                  nudge_y = 0,
+                  color = 'white') +
+    geom_text_repel(data = plot_dat_split712 %>% filter(env == "PercTri"),
+                   aes(label = level),
+                   force = 0,
+                   nudge_x = 0,
+                   nudge_y = 0,
+                   color = 'blue3') +
+  
+  scale_x_continuous(limits = c(-45,-15), 
+                     breaks = seq(-45,-15,5),
+                     guide = "prism_minor", 
+                     minor_breaks = seq(-45,-15,1)) +
+  scale_y_continuous(
+       breaks = seq(0,100,by = 25),
+       minor_breaks = seq(0,100, by=5),
+       guide = "prism_minor",
+       limits = c(0,100)
+     ) +
+  # ggtitle("CRMv2 - Performance FullTri - Low SNRs") +
+  xlab("Signal-to-Noise Ratio (dB)") +
+  ylab("Proportion Correct") +
+  # scale_x_continuous(breaks=c(-18, -21,-24,-27,-28,-30,-31,-33,-34,-37,-40,-43, -46),labels=c(positions_annoy_split712, "Silence")) +
+  # geom_text(aes(x=snr, y=0, label=paste0(snr-10, "dB")), color = "grey", size = 3) +
+  theme_classic() +
+  theme(legend.position = "none") +
+  theme(axis.title.y=element_blank()) 
+  # theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+   -> speech_split712_plot)
+
+# svg("vis/speech_split712_plot.svg",width=8, height = 5)
+# speech_split712_plot
+# dev.off()
+
+# Split 1-6 ----
+(plot_dat_split16 %>% 
+  filter(env != "silence") %>% 
+  ggplot(aes(x=numSNR, y=CRMhit*100, group=env, color=env)) +
+  geom_hline(yintercept=(mean(crm_split16$CRMhit[crm_split16$env == "silence"]) * 100), 
+             linetype = "dashed", color = "dimgray") +
+  geom_line(linetype="longdash") +
+  geom_errorbar(aes(ymin=(CRMhit-se)*100, ymax=(CRMhit+se)*100),
+                width=.2) + 
+  geom_point(stat = "identity", size = 5, aes(colour = env, fill = env, shape = env)) +
+  scale_shape_manual(values=c(15,24)) +
+  # geom_text_repel(aes(label = level), 
+  #                   nudge_y = 5,
+  #                   nudge_x = -1) +
+  # 
+  scale_fill_manual(values=c('black','white')) +
+  scale_color_manual(values=c('black','red3')) + 
+  geom_text_repel(data = plot_dat_split16 %>% filter(env == "Flat"),
+                  aes(label = level),
+                  force = 0,
+                  nudge_x = 0,
+                  nudge_y = 0.2,
+                  color = 'white') +
+    geom_text_repel(data = plot_dat_split16 %>% filter(env == "PercTri"),
+                   aes(label = level),
+                   force = 0,
+                   nudge_x = 0,
+                   nudge_y = 0.2,
+                   color = 'red') +
+  scale_x_continuous(limits = c(-45,-15), 
+                     breaks = seq(-45,-15,5),
+                     guide = "prism_minor", 
+                     minor_breaks = seq(-45,-15,1)) +
+  scale_y_continuous(
+       breaks = seq(0,100,by = 25),
+       minor_breaks = seq(0,100, by=5),
+       guide = "prism_minor",
+       limits = c(0,100)
+     ) +
+   
+  # ggtitle("CRMv2 - Performance FullTri - Low SNRs") +
+  xlab("Signal-to-Noise Ratio") +
+  ylab("Proportion Correct") +
+  # scale_x_continuous(breaks=c(-18,-18.45,-21,-21.45,-24,-24.45,-27,-27.45,-30,-30.45,-33,-33.45,-36),labels=c(positions_annoy_split16, "Silence")) +
+  theme_classic() +
+  theme(legend.position = "none") +
+  theme(
+    axis.title.y=element_blank(), 
+    # axis.title.x = element_blank(), 
+    # axis.text.x = element_blank()
+    ) -> speech_split16_plot)
+
+# svg("vis/speech_split16_plot.svg",width=8, height = 5)
+# speech_split16_plot
+# dev.off()
+
+
+# Split 1-4 ----
+(plot_dat_split14 %>% 
+  filter(env != "silence") %>% 
+  ggplot(aes(x=numSNR, y=CRMhit*100, group=env, color=env)) +
+  geom_hline(yintercept=(mean(crm_split16$CRMhit[crm_split16$env == "silence"]) * 100), 
+             linetype = "dashed", color = "dimgray") +
+  geom_line(linetype="longdash") +
+  geom_errorbar(aes(ymin=(CRMhit-se)*100, ymax=(CRMhit+se)*100),
+                width=.2) + 
+  geom_point(stat = "identity", size = 5, aes(colour = env, fill = env, shape = env)) +
+  scale_shape_manual(values=c(15,24)) +
+  # geom_text_repel(aes(label = level), 
+  #                   nudge_y = 5,
+  #                   nudge_x = -1) +
+  # 
+  scale_fill_manual(values=c('black','white')) +
+  scale_color_manual(values=c('black','gray60')) + 
+  geom_text_repel(data = plot_dat_split14 %>% filter(env == "Flat"),
+                  aes(label = level),
+                  force = 0,
+                  nudge_x = 0,
+                  nudge_y = 0.2,
+                  color = 'white') +
+    geom_text_repel(data = plot_dat_split14 %>% filter(env == "PercTri"),
+                   aes(label = level),
+                   force = 0,
+                   nudge_x = 0,
+                   nudge_y = 0.2,
+                   color = 'black') +
+  scale_x_continuous(limits = c(-45,-15), 
+                     breaks = seq(-45,-15,5),
+                    #  guide = "prism_minor", 
+                     minor_breaks = seq(-45,-15,1)) +
+  scale_y_continuous(
+       breaks = seq(0,100,by = 25),
+       minor_breaks = seq(0,100, by=5),
+      #  guide = "prism_minor",
+       limits = c(0,100)
+     ) +
+   
+  # ggtitle("CRMv2 - Performance FullTri - Low SNRs") +
+  xlab("Signal-to-Noise Ratio") +
+  ylab("Proportion Correct") +
+  # scale_x_continuous(breaks=c(-18,-18.45,-21,-21.45,-24,-24.45,-27,-27.45,-30,-30.45,-33,-33.45,-36),labels=c(positions_annoy_split16, "Silence")) +
+  theme_classic() +
+  theme(legend.position = "none") +
+  theme(
+    # axis.title.y=element_blank(), 
+    # axis.title.x = element_blank(), 
+    # axis.text.x = element_blank()
+    ) -> speech_split14_plot)
+
+# svg("vis/speech_split16_plot.svg",width=8, height = 5)
+# speech_split16_plot
+# dev.off()
+
+speech_fulltri_plot + speech_split16_plot + speech_split712_plot #1250x500
+
+```
+
+### Annoyance - Vis
+
+```{r}
+# OLD ----  
+## Full tri ----
+(ggplot(line_plot_annoy_fulltri, aes(x = numSNR, y = percentage_annoy_fulltri*100, group=env, color=env)) + 
+  geom_line(linetype="longdash")+
+  geom_point(stat = "identity", size = 5, aes(colour = env, fill = env, shape = env)) +
+  scale_shape_manual(values=c(15,24)) +
+  scale_fill_manual(values=c('black','purple3')) +
+  scale_color_manual(values=c('black','purple3')) + 
+  geom_text_repel(data = line_plot_annoy_fulltri %>% filter(env == "Flat"),
+                  aes(label = level),
+                  force = 0,
+                  nudge_x = 0,
+                  nudge_y = 0.2,
+                  color = 'white') +
+    geom_text_repel(data = line_plot_annoy_fulltri %>% filter(env == "PercTri"),
+                   aes(label = level),
+                   force = 0,
+                   nudge_x = 0,
+                   nudge_y = 0.2,
+                   color = 'white') +
+  # ggtitle("Annoyance Triangle Full Triangle - InPerson") +
+  xlab("Root-Mean-Squared (dB)") +
+  ylab("Proportion Chosen as More Annoying") +
+  ggtitle("Annoyance Rating (% Chosen as More Annoying)"
+          #, subtitle = 'Annoyance (2)'
+          ) +
+  theme_classic() +
+  theme(legend.position = "none", plot.title = element_text(hjust=0.5), axis.title.x = element_blank(), axis.text.x = element_blank(), plot.subtitle = element_text(hjust = 0.5)) +
+  # theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  # scale_x_continuous(breaks=c(-18,-21,-24,-27,-30,-33),labels=positions_det_fulltri) +
+  scale_x_continuous(limits = c(-70,-40),
+                     breaks = seq(-70,-40,5),
+                     guide = "prism_minor",
+                     minor_breaks = seq(-70,-40,1)) +
+  ylim(0,100) + 
+  theme(axis.title.y=element_blank()) -> annoy_fulltri_plot)
+
+# svg("vis/annoy_fulltri_plot.svg",width=8, height = 5)
+# annoy_fulltri_plot
+# dev.off()
+
+## Split 7-12 ----
+
+positions_annoy_split712 <- c("-18dB", "-21dB", "-24dB", "-27dB", "-28dB", "-30dB", "-31dB","-33dB","-34dB", "-37dB", "-40dB", "-43dB")
+
+(ggplot(line_plot_annoy_split712, aes(x=numSNR,y=percentage_annoy_split712*100,group=env,color=env)) +
+  geom_line(linetype="longdash") +
+  geom_point(stat = "identity", size = 5, aes(colour = env, fill = env, shape = env)) +
+  scale_shape_manual(values=c(15,24)) +
+  scale_fill_manual(values=c('black','white')) +
+  scale_color_manual(values=c('black','blue3')) +
+  geom_text_repel(data = line_plot_annoy_split712 %>% filter(env == "Flat"),
+                  aes(label = level),
+                  force = 0,
+                  nudge_x = 0,
+                  nudge_y = 0.2,
+                  color = 'white') +
+  geom_text_repel(data = line_plot_annoy_split712 %>% filter(env == "PercTri"),
+                   aes(label = level),
+                   force = 0,
+                   nudge_x = 0,
+                   nudge_y = 0.2,
+                   color = 'blue3') +
+  # ggtitle("Annoyance Triangle Split 7-12 - InPerson") +
+  xlab("Root-Mean-Squared (dB)") +
+  ylab("Proportion Chosen as More Annoying") +
+  theme_classic() +
+  theme(legend.position = "none") +
+  theme(axis.title.y=element_blank()) +
+  scale_x_continuous(limits = c(-70,-40),
+                     breaks = seq(-70,-40,5),
+                     guide = "prism_minor",
+                     minor_breaks = seq(-70,-40,1)) +
+  ylim(0,100) -> annoy_split712_plot)
+
+# svg("vis/annoy_split712_plot.svg",width=8, height = 5)
+# annoy_split712_plot
+# dev.off()
+
+## Split 1-6 ----
+
+positions_annoy_split16 <- c("-18dB", "-18.45dB", "-21dB", "-21.45dB", "-24dB", "-24.45dB", "-27dB","-27.45dB","-30dB", "-30.45dB", "-33dB", "-33.45dB")
+
+(ggplot(line_plot_annoy_split16, aes(x = numSNR ,y = percentage_annoy_split16*100, group=env, color = env)) +    
+  geom_line(linetype="longdash")+
+  geom_point(stat = "identity", size = 5, aes(colour = env, fill = env, shape = env)) +
+  scale_shape_manual(values=c(15,24)) +
+  scale_fill_manual(values=c('black','white')) +
+  scale_color_manual(values=c('black','red3')) +
+  geom_text_repel(data = line_plot_annoy_split16 %>% filter(env == "Flat"),
+                  aes(label = level),
+                  force = 0,
+                  nudge_x = 0,
+                  nudge_y = 0.2,
+                  color = 'white') +
+  geom_text_repel(data = line_plot_annoy_split16 %>% filter(env == "PercTri"),
+                  aes(label = level),
+                  force = 0,
+                  nudge_x = 0,
+                  nudge_y = 0.2,
+                  color = 'red3') +
+  # ggtitle("Annoyance Triangle Split 1-6 - InPerson") +
+  xlab("Root-Mean-Squared (dB)") +
+  ylab("Proportion Chosen as More Annoying") +
+  theme_classic() +
+  theme(legend.position = "none") +
+  theme(axis.title.y=element_blank(), axis.title.x = element_blank(), axis.text.x = element_blank()) +
+  # theme(axis.text.x.bottom = element_text(angle = 45, hjust = 1)) +
+  # scale_x_continuous(breaks=c(-18, -18.45,-21,-21.45,-24,-24.45,-27,-27.45,-30,-30.45,-33,-33.45),labels=positions_annoy_split16) +
+  scale_x_continuous(limits = c(-70,-40),
+                     breaks = seq(-70,-40,5),
+                     guide = "prism_minor",
+                     minor_breaks = seq(-70,-40,1)) +
+  ylim(0,100) -> annoy_split16_plot)
+
+annoy_fulltri_plot + annoy_split16_plot + annoy_split712_plot #1250x500
+
+# svg("vis/annoy_split16_plot.svg",width=8, height = 5)
+# annoy_split16_plot
+# dev.off()
+
+
+
+## Split 1-4 ----
+
+# Added a negative sign to Flat Level 5 RMS dB
+# line_plot_annoy_split14[3,"numSNR"]
+# line_plot_annoy_split14[3,"numSNR"] <- -47
+
+annoy_split14_plot <- c("-18dB", "-18.45dB", "-21dB", "-21.45dB", "-24dB", "-24.45dB", "-27dB","-27.45dB","-30dB", "-30.45dB", "-33dB", "-33.45dB")
+
+(ggplot(line_plot_annoy_split14, aes(x = numSNR ,y = percentage_annoy_split14*100, group=env, color = env)) +    
+  geom_line(linetype="longdash")+
+  geom_point(stat = "identity", size = 5, aes(colour = env, fill = env, shape = env)) +
+  scale_shape_manual(values=c(15,24)) +
+  scale_fill_manual(values=c('black','white')) +
+  scale_color_manual(values=c('black','gray60')) +
+  geom_text_repel(data = line_plot_annoy_split14 %>% filter(env == "Flat"),
+                  aes(label = level),
+                  force = 0,
+                  nudge_x = 0,
+                  nudge_y = 0.2,
+                  color = 'white') +
+  geom_text_repel(data = line_plot_annoy_split14 %>% filter(env == "PercTri"),
+                  aes(label = level),
+                  force = 0,
+                  nudge_x = 0,
+                  nudge_y = 0.2,
+                  color = 'gray60') +
+  ggtitle("Annoyance Triangle Split 1-4 - InPerson") +
+  xlab("Root-Mean-Squared (dB)") +
+  ylab("Proportion Chosen as More Annoying") +
+  theme_classic() +
+  theme(legend.position = "none") +
+  # theme(
+  #   axis.title.y=element_blank(), 
+  #   axis.title.x = element_blank(), 
+  #   axis.text.x = element_blank()
+  #   ) +
+  # theme(axis.text.x.bottom = element_text(angle = 45, hjust = 1)) +
+  # scale_x_continuous(breaks=c(-18, -18.45,-21,-21.45,-24,-24.45,-27,-27.45,-30,-30.45,-33,-33.45),labels=positions_annoy_split16) +
+  scale_x_continuous(limits = c(-70,-40),
+                     breaks = seq(-70,-40,5),
+                    #  guide = "prism_minor",
+                     minor_breaks = seq(-70,-40,1)) +
+  ylim(0,100) -> annoy_split14_plot)
+
+crm_split14_plot + speech_split14_plot + annoy_split14_plot
+```
+
+#### All Visualizations
+
+```{r}
+# svg("vis/AllPlots.svg",width=8, height = 6)
+
+# (crm_fulltri_plot  + crm_split16_plot + crm_split712_plot) / (speech_fulltri_plot + speech_split16_plot + speech_split712_plot) / (annoy_fulltri_plot + annoy_split16_plot + annoy_split712_plot)
+
+# dev.off()
+
+# (crm_fulltri_plot_tilted + crm_split712_plot_tilted + crm_split16_plot_tilted) / (speech_fulltri_plot_tilted + speech_split712_plot_tilted + speech_split16_plot_tilted) / (annoy_fulltri_plot_tilted + annoy_split712_plot_tilted + annoy_split16_plot_tilted)
+
+
+svg("vis/AllPlots.svg",width=8, height=6)
+((crm_fulltri_plot + speech_fulltri_plot + annoy_fulltri_plot) / (crm_split16_plot + speech_split16_plot + annoy_split16_plot) / (crm_split712_plot + speech_split712_plot + annoy_split712_plot))
+dev.off()
+```
+
+#### Appenix
+
+##### Speech Zoomed
+
+```{r}
+(plot_dat_fulltri %>% 
+    filter(env != "silence") %>% 
+    ggplot(aes(x=numSNR, y=CRMhit*100, group=env, color=env)) +
+    geom_line(linetype="longdash") +
+    geom_rect(aes(xmin = -Inf, xmax = Inf, 
+                  ymin = ((plot_dat_fulltri$CRMhit[plot_dat_fulltri$env == "silence"] - plot_dat_fulltri$se[plot_dat_fulltri$env == "silence"])*100), 
+                  ymax = ((plot_dat_fulltri$CRMhit[plot_dat_fulltri$env == "silence"] + plot_dat_fulltri$se[plot_dat_fulltri$env == "silence"])*100)), 
+              fill = "darkgray",
+              color = "white",
+              alpha = 0.05) +
+    geom_hline(yintercept=(as.numeric(plot_dat_fulltri 
+                         %>% dplyr::filter(env == "silence") 
+                         %>% dplyr::select(CRMhit))*100), linetype = "dotted", color = "white", size = 0.75) +
+    geom_errorbar(
+      # data = plot_dat_fulltri, 
+      aes(ymin=(CRMhit-se)*100, ymax=(CRMhit+se)*100),
+                  width=.2) + 
+    geom_point(stat = "identity", size = 5, aes(colour = env, fill = env, shape = env)) + #orignal is size =5
+    scale_shape_manual(values=c(15,24)) +
+    geom_text_repel(data = plot_dat_fulltri %>% filter(env == "Flat"),
+                  aes(label = level),
+                  force = 0,
+                  nudge_x = 0,
+                  nudge_y = 0.004,
+                  color = 'white') +
+    geom_text_repel(data = plot_dat_fulltri %>% filter(env == "PercTri"),
+                   aes(label = level),
+                   force = 0,
+                   nudge_x = 0,
+                   nudge_y = 0.004,
+                   color = 'white') +
+    xlab("Signal-to-Noise Ratio (dB)") +
+    ylab("Speech Comprehension (% Correct)") +
+    ggtitle(expression("Tri-"[Full])
+            #, subtitle = "CRM (1)"
+            ) +
+    scale_color_manual(values=c('black','purple3'
+                                #,"cadetblue3"
+                                )) +
+    scale_fill_manual(values=c('black','purple3'
+                                #,"cadetblue3"
+                                ))+
+    scale_x_continuous(limits = c(-45,-15), 
+                     breaks = seq(-45,-15,5),
+                     guide = "prism_minor", 
+                     minor_breaks = seq(-45,-15,1)) +
+    theme_classic() +
+    theme(legend.position = "none") +
+    theme(plot.title = element_text(hjust=0.5), plot.subtitle = element_text(hjust = 0.5), axis.title.x = element_blank(), axis.text.x = element_blank()) +
+    ylim(70,100) 
+ -> speech_fulltri_plot_zoom)
+
+# Split 7-12 ---- 
+
+(plot_dat_split712 %>% 
+   filter(env != "silence") %>% 
+   ggplot(aes(x=numSNR, y=CRMhit*100, group=env, color = env)) +
+   geom_line(linetype="longdash") +
+   geom_rect(aes(xmin = -Inf, xmax = Inf, 
+                 ymin = ((plot_dat_split712$CRMhit[plot_dat_split712$env == "silence"] - plot_dat_split712$se[plot_dat_split712$env == "silence"])*100), 
+                 ymax = ((plot_dat_split712$CRMhit[plot_dat_split712$env == "silence"] + plot_dat_split712$se[plot_dat_split712$env == "silence"])*100)), 
+              fill = "darkgray",
+              color = "white",
+              alpha = 0.05) +
+   geom_hline(yintercept=(plot_dat_split712$CRMhit[plot_dat_split712$env == "silence"])*100, linetype = "dotted", color = "white", size = 0.75) +
+   geom_errorbar(aes(ymin=(CRMhit-se)*100, ymax=(CRMhit+se)*100),
+                width=.2) + 
+   geom_point(stat = "identity", size = 5, aes(colour = env, fill = env, shape = env)) + #remeber size 5 normal
+   scale_shape_manual(values=c(15,24)) +
+   scale_fill_manual(values=c('black','white')) +
+   scale_color_manual(values=c('black','blue3')) +
+   geom_text_repel(data = plot_dat_split712 %>% filter(env == "Flat"),
+                  aes(label = level),
+                  force = 0,
+                  nudge_x = 0,
+                  nudge_y = 0,
+                  color = 'white') +
+    geom_text_repel(data = plot_dat_split712 %>% filter(env == "PercTri"),
+                   aes(label = level),
+                   force = 0,
+                   nudge_x = 0,
+                   nudge_y = 0,
+                   color = 'blue3') +
+  scale_x_continuous(limits = c(-45,-15), 
+                     breaks = seq(-45,-15,5),
+                     guide = "prism_minor", 
+                     minor_breaks = seq(-45,-15,1)) +
+  ggtitle(expression("Tri-"[7:12])) +
+  xlab("Signal-to-Noise Ratio (dB)") +
+  ylab("Proportion Correct") +
+  theme_classic() +
+  theme(legend.position = "none") +
+  theme(axis.title.y=element_blank(),plot.title = element_text(hjust=0.5), axis.text.y = element_blank(), axis.title.x = element_blank(), axis.text.x = element_blank()) +
+  ylim(70,100) -> speech_split712_plot_zoom)
+
+# svg("vis/speech_split712_plot.svg",width=8, height = 5)
+# speech_split712_plot
+# dev.off()
+
+# Split 1-6 ----
+(plot_dat_split16 %>% 
+  filter(env != "silence") %>% 
+  ggplot(aes(x=numSNR, y=CRMhit*100, group=env, color=env)) +
+  geom_rect(aes(xmin = -Inf, xmax = Inf, 
+                ymin = ((plot_dat_split16$CRMhit[plot_dat_split16$env == "silence"] - plot_dat_split16$se[plot_dat_split16$env == "silence"])*100), 
+                ymax = ((plot_dat_split16$CRMhit[plot_dat_split16$env == "silence"] + plot_dat_split16$se[plot_dat_split16$env == "silence"])*100)), 
+              fill = "darkgray",
+              color = "white",
+              alpha = 0.05) +
+  geom_hline(yintercept=(plot_dat_split16$CRMhit[plot_dat_split16$env == "silence"]*100)
+             , linetype = "dotted", color = "white", size = 0.75) +
+  geom_line(linetype="longdash") +
+  geom_errorbar(aes(ymin=(CRMhit-se)*100, ymax=(CRMhit+se)*100),
+                width=.2) + 
+  geom_point(stat = "identity", size = 5, aes(colour = env, fill = env, shape = env)) +
+  scale_shape_manual(values=c(15,24)) +
+  scale_fill_manual(values=c('black','white')) +
+  scale_color_manual(values=c('black','red3')) + 
+  geom_text_repel(data = plot_dat_split16 %>% filter(env == "Flat"),
+                  aes(label = level),
+                  force = 0,
+                  nudge_x = 0.1,
+                  nudge_y = 0.1,
+                  color = 'white') +
+    geom_text_repel(data = plot_dat_split16 %>% filter(env == "PercTri"),
+                   aes(label = level),
+                   force = 0,
+                   nudge_x = 0,
+                   nudge_y = 0,
+                   color = 'red') +
+  scale_x_continuous(limits = c(-45,-15), 
+                     breaks = seq(-45,-15,5),
+                     guide = "prism_minor", 
+                     minor_breaks = seq(-45,-15,1)) +
+  ggtitle(expression("Tri-"[1:6])) +
+  xlab("Signal-to-Noise Ratio (dB)") +
+  ylab("Proportion Correct") +
+  theme_classic() +
+  theme(legend.position = "none") +
+  theme(axis.title.y=element_blank(),plot.title = element_text(hjust=0.5), axis.text.y = element_blank(), axis.title.x = element_blank(), axis.text.x = element_blank()) +
+  ylim(70,100) -> speech_split16_plot_zoom)
+
+# svg("vis/speech_split16_plot.svg",width=8, height = 5)
+# speech_split16_plot
+# dev.off()
+
+(speech_fulltri_plot_zoom + speech_split16_plot_zoom + speech_split712_plot_zoom) /
+  (speech_fulltri_plot + speech_split16_plot + speech_split712_plot)
+
+```
+
+##### Speech Normal Appx
+
+```{r}
+# FullTri ---- 
+(plot_dat_fulltri %>% 
+    filter(env != "silence") %>% 
+    ggplot(aes(x=numSNR, y=CRMhit*100, group=env, color=env)) +
+    geom_line(linetype="longdash") +
+    geom_hline(yintercept=(plot_dat_fulltri$CRMhit[plot_dat_fulltri$env == "silence"]*100), 
+               linetype = "dashed", color = "dimgray") +
+    geom_errorbar(
+      # data = plot_dat_fulltri, 
+      aes(ymin=(CRMhit-se)*100, ymax=(CRMhit+se)*100),
+                  width=.2) + 
+    geom_point(stat = "identity", size = 5, aes(colour = env, fill = env, shape = env)) + #orignal is size =5
+    scale_shape_manual(values=c(15,24)) +
+    geom_text_repel(data = plot_dat_fulltri %>% filter(env == "Flat"),
+                  aes(label = level),
+                  force = 0,
+                  nudge_x = 0,
+                  nudge_y = 0.004,
+                  color = 'white') +
+    geom_text_repel(data = plot_dat_fulltri %>% filter(env == "PercTri"),
+                   aes(label = level),
+                   force = 0,
+                   nudge_x = 0,
+                   nudge_y = 0.004,
+                   color = 'white') +
+    xlab("Signal-to-Noise Ratio (dB)") +
+    ylab("Speech Comprehension (% Correct)") +
+    scale_color_manual(values=c('black','purple3'
+                                #,"cadetblue3"
+                                )) +
+    scale_fill_manual(values=c('black','purple3'
+                                #,"cadetblue3"
+                                ))+
+    scale_x_continuous(limits = c(-45,-15), 
+                     breaks = seq(-45,-15,5),
+                     guide = "prism_minor", 
+                     minor_breaks = seq(-45,-15,1)) +
+    scale_y_continuous(
+       breaks = seq(0,100,by = 25),
+       minor_breaks = seq(0,100, by=5),
+       guide = "prism_minor",
+       limits = c(0,100)
+     ) +
+    theme_classic() +
+    theme(legend.position = "none") +
+    theme(plot.title = element_blank(), plot.subtitle = element_text(hjust = 0.5)) 
+     -> speech_fulltri_plot_app)
+
+# svg("vis/speech_fulltri_plot.svg",width=8, height = 5)
+# speech_fulltri_plot
+# dev.off()
+
+# Split 7-12 ---- 
+
+(plot_dat_split712 %>% 
+   filter(env != "silence") %>% 
+   ggplot(aes(x=numSNR, y=CRMhit*100, group=env, color = env)) +
+   geom_line(linetype="longdash") +
+   geom_hline(yintercept=(plot_dat_split712$CRMhit[plot_dat_split712$env == "silence"]*100), linetype = "dashed", color = "dimgray") +
+   geom_errorbar(aes(ymin=(CRMhit-se)*100, ymax=(CRMhit+se)*100),
+                width=.2) + 
+   geom_point(stat = "identity", size = 5, aes(colour = env, fill = env, shape = env)) + #remeber size 5 normal
+   scale_shape_manual(values=c(15,24)) +
+   scale_fill_manual(values=c('black','white')) +
+   scale_color_manual(values=c('black','blue3')) +
+   geom_text_repel(data = plot_dat_split712 %>% filter(env == "Flat"),
+                  aes(label = level),
+                  force = 0,
+                  nudge_x = 0,
+                  nudge_y = 0,
+                  color = 'white') +
+    geom_text_repel(data = plot_dat_split712 %>% filter(env == "PercTri"),
+                   aes(label = level),
+                   force = 0,
+                   nudge_x = 0,
+                   nudge_y = 0,
+                   color = 'blue3') +
+  scale_x_continuous(limits = c(-45,-15), 
+                     breaks = seq(-45,-15,5),
+                     guide = "prism_minor", 
+                     minor_breaks = seq(-45,-15,1)) +
+  scale_y_continuous(
+       breaks = seq(0,100,by = 25),
+       minor_breaks = seq(0,100, by=5),
+       guide = "prism_minor",
+       limits = c(0,100)
+     ) +
+  xlab("Signal-to-Noise Ratio (dB)") +
+  ylab("Proportion Correct") +
+  theme_classic() +
+  theme(legend.position = "none") +
+  theme(axis.title.y=element_blank(), axis.text.y = element_blank()) 
+   -> speech_split712_plot_app)
+
+# svg("vis/speech_split712_plot.svg",width=8, height = 5)
+# speech_split712_plot
+# dev.off()
+
+# Split 1-6 ----
+(plot_dat_split16 %>% 
+  filter(env != "silence") %>% 
+  ggplot(aes(x=numSNR, y=CRMhit*100, group=env, color=env)) +
+  geom_hline(yintercept=(plot_dat_split16$CRMhit[plot_dat_split16$env == "silence"]*100), linetype = "dashed", color = "dimgray") +
+  geom_line(linetype="longdash") +
+  geom_errorbar(aes(ymin=(CRMhit-se)*100, ymax=(CRMhit+se)*100),
+                width=.2) + 
+  geom_point(stat = "identity", size = 5, aes(colour = env, fill = env, shape = env)) +
+  scale_shape_manual(values=c(15,24)) +
+  scale_fill_manual(values=c('black','white')) +
+  scale_color_manual(values=c('black','red3')) + 
+  geom_text_repel(data = plot_dat_split16 %>% filter(env == "Flat"),
+                  aes(label = level),
+                  force = 0,
+                  nudge_x = 0,
+                  nudge_y = 0.2,
+                  color = 'white') +
+    geom_text_repel(data = plot_dat_split16 %>% filter(env == "PercTri"),
+                   aes(label = level),
+                   force = 0,
+                   nudge_x = 0,
+                   nudge_y = 0.2,
+                   color = 'red') +
+  scale_x_continuous(limits = c(-45,-15), 
+                     breaks = seq(-45,-15,5),
+                     guide = "prism_minor", 
+                     minor_breaks = seq(-45,-15,1)) +
+  scale_y_continuous(
+       breaks = seq(0,100,by = 25),
+       minor_breaks = seq(0,100, by=5),
+       guide = "prism_minor",
+       limits = c(0,100)
+     ) +
+  xlab("Signal-to-Noise Ratio (dB)") +
+  ylab("Proportion Correct") +
+  theme_classic() +
+  theme(legend.position = "none") +
+  theme(axis.title.y=element_blank(), axis.text.y = element_blank()) 
+   -> speech_split16_plot_app)
+
+# svg("vis/speech_split16_plot.svg",width=8, height = 5)
+# speech_split16_plot
+# dev.off()
+
+(speech_fulltri_plot_app + speech_split16_plot_app + speech_split712_plot_app) #1250x500
+
+```
+
+##### Appendix Speech Combined
+
+```{r}
+svg("vis/Appendix_speech.svg",width=11, height=9)
+(speech_fulltri_plot_zoom + speech_split16_plot_zoom + speech_split712_plot_zoom) /
+  (speech_fulltri_plot_app + speech_split16_plot_app + speech_split712_plot_app)
+dev.off()
+```
+
+## Data Analysis
+
+### Detection
+
+```{r}
+#Factorial ANOVA ----
+
+## Full tri ----
+dprime_fulltri %>% 
+  dplyr::mutate(level = case_when(
+    snr == "-18dB" ~ as.factor(6),
+    snr == "-21dB" ~ as.factor(5),
+    snr == "-24dB" ~ as.factor(4),
+    snr == "-27dB" ~ as.factor(3),
+    snr == "-30dB" ~ as.factor(2),
+    snr == "-33dB" ~ as.factor(1),
+  )) -> dprime_fulltri
+
+#afex
+summary(fulltri_aov <- aov_car(dprime~snr*env + Error(participant/(snr*env)), data=dprime_fulltri))
+
+# Univariate Type III Repeated-Measures ANOVA Assuming Sphericity
+# 
+#              Sum Sq num Df Error SS den Df F value    Pr(>F)    
+# (Intercept) 1023.50      1  152.519     34 228.161 < 2.2e-16 ***
+# snr           19.96      5   25.400    170  26.722 < 2.2e-16 ***
+# env           86.11      1   52.308     34  55.970 1.108e-08 ***
+# snr:env        9.13      5   29.854    170  10.396 1.024e-08 ***
+
+
+fulltri_aov <- aov(dprime~snr*env + Error(participant/(snr*env)), data = dprime_fulltri)
+
+emm1 <- emmeans(fulltri_aov, pairwise ~ snr * env)
+contrast(emm1, method = "pairwise", combine = TRUE, simple = "env", by = "snr")
+contrast(emm1, method = "pairwise", combine = TRUE, simple = "snr", by = "env")
+#Tri-Full Significant =  (-21dB) - (-30dB), (-21dB) - (-30dB), (-21dB) - (-24dB), (-18dB) - (-33dB) (only 4 combinations are significant)
+
+effectsize::eta_squared(fulltri_aov, partial = T, alternative = "two.sided")
+
+### means and SDs ---- 
+
+dprime_fulltri %>%
+  dplyr::group_by(env) %>% 
+  dplyr::summarize(mean(dprime, na.rm =T),
+                   sd(dprime, na.rm = T))
+
+dprime_trifull_only <- dprime_fulltri %>% 
+  filter(env == "PercTri")
+summary(aov_dprime_trifull_only <- aov_car(dprime~snr + Error(participant/snr), data = dprime_trifull_only))
+emmeans(aov_dprime_trifull_only, pairwise ~ snr)
+#X.18dB - X.33dB  0.300414 0.0720 34   4.171  0.0025 (6 vs 1)
+#X.18dB - X.21dB  0.288663 0.0778 34   3.712  0.0088 (6 vs 5)
+
+
+effectsize::eta_squared(aov_dprime_trifull_only)
+
+dprime_trifull_flat_only <- dprime_fulltri %>% 
+  filter(env == "Flat")
+summary(aov_dprime_trifull_flat_only <- aov_car(dprime~snr + Error(participant/snr), data = dprime_trifull_flat_only))
+emmeans(aov_dprime_trifull_flat_only, pairwise ~ snr)
+effectsize::eta_squared(aov_dprime_trifull_flat_only)
+
+dprime_effectsize_META_test_between(dprime_fulltri, dprime_split16)
+dprime_effectsize_META_test_between(dprime_fulltri, dprime_split712)
+dprime_effectsize_META_test_between(dprime_split16, dprime_split712)
+
+## Split 16 ----
+dprime_split16 %>%
+  dplyr::group_by(env) %>% 
+  dplyr::summarize(mean(dprime, na.rm =T),
+                   sd(dprime, na.rm = T),
+                   var(dprime, na.rm = T))
+
+#afex
+summary(split16_aov <- aov_car(dprime~snr*env + Error(participant/(snr*env)), data=dprime_split16))
+
+# Univariate Type III Repeated-Measures ANOVA Assuming Sphericity
+# 
+#             Sum Sq num Df Error SS den Df F value    Pr(>F)    
+# (Intercept) 500.42      1   330.78     38  57.488 4.068e-09 ***
+# snr          14.26      5    30.03    190  18.045 1.247e-14 ***
+# env          45.76      1    27.79     38  62.570 1.496e-09 ***
+# snr:env       7.20      5    24.05    190  11.374 1.302e-09 ***
+
+#rstatix
+
+split16_aov <- anova_test(
+  data = dprime_split16, dv = dprime, wid = participant,
+  within = c(snr, env)
+  )
+get_anova_table(split16_aov)
+
+
+split16_aov <- aov(dprime~snr*env + Error(participant/(snr*env)), data = dprime_split16)
+emm2 <- emmeans(split16_aov, pairwise ~ snr * env)
+contrast(emm2, method = "pairwise", combine = TRUE, simple = "env", by = "snr")
+contrast(emm2, method = "pairwise", combine = TRUE, simple = "snr", by = "env")
+#Tri-16 Significant =  
+
+effectsize::eta_squared(split16_aov, alternative = "two.sided")
+
+### means and SDs ---- 
+
+dprime_split16_only <- dprime_split16 %>% 
+  filter(env == "PercTri")
+summary(aov_dprime_split16_only <- aov_car(dprime~snr + Error(participant/snr), data = dprime_split16_only))
+# Univariate Type III Repeated-Measures ANOVA Assuming Sphericity
+# 
+#             Sum Sq num Df Error SS den Df F value   Pr(>F)    
+# (Intercept) 424.42      1  247.014     38 65.2916 8.94e-10 ***
+# snr           0.64      5   19.756    190  1.2251   0.2989    
+emmeans(aov_dprime_split16_only, pairwise ~ snr)
+
+effectsize::eta_squared(aov_dprime_split16_only)
+
+summary(aov_dprime_split16_only <- aov_car(dprime~snr + Error(participant/snr), data = dprime_split16_only))
+emmeans(aov_dprime_split16_only, pairwise ~ snr)
+# X.18dB - X.33dB  0.231379 0.0737 34   3.138  0.0377 (6 vs 1)
+
+dprime_split16_flat_only <- dprime_split16 %>% 
+  filter(env == "Flat")
+summary(aov_dprime_split16_flat_only <- aov_car(dprime~snr + Error(participant/snr), data = dprime_split16_flat_only))
+# Univariate Type III Repeated-Measures ANOVA Assuming Sphericity
+# 
+#              Sum Sq num Df Error SS den Df F value    Pr(>F)    
+# (Intercept) 121.764      1   111.56     38  41.475 1.421e-07 ***
+# snr          20.824      5    34.33    190  23.051 < 2.2e-16 ***
+effectsize::eta_squared(aov_dprime_split16_flat_only)
+
+summary(aov_dprime_split16_flat_only <- aov_car(dprime~snr + Error(participant/snr), data = dprime_split16_flat_only))
+emmeans(aov_dprime_split16_flat_only, pairwise ~ snr)
+
+## Split 712 ---- 
+#afex
+summary(split712_aov <- aov_car(dprime~snr*env + Error(participant/(snr*env)), data=dprime_split712))
+
+# Univariate Type III Repeated-Measures ANOVA Assuming Sphericity
+# 
+#              Sum Sq num Df Error SS den Df  F value  Pr(>F)    
+# (Intercept) 1003.70      1  231.998     42 181.7059 < 2e-16 ***
+# snr           70.22      5   68.319    210  43.1676 < 2e-16 ***
+# env            0.28      1  121.026     42   0.0962 0.75799    
+# snr:env        2.86      5   45.090    210   2.6616 0.02343 * 
+
+#rstatix
+
+split712_aov <- anova_test(
+  data = dprime_split712, dv = dprime, wid = participant,
+  within = c(snr, env)
+  )
+get_anova_table(split712_aov)
+
+
+split712_aov <- aov(dprime~snr*env + Error(participant/(snr*env)), data = dprime_split712)
+emm3 <- emmeans(split712_aov, pairwise ~ snr * env)
+contrast(emm2, method = "pairwise", combine = TRUE, simple = "env", by = "snr")
+contrast(emm2, method = "pairwise", combine = TRUE, simple = "snr", by = "env")
+#Tri-16 Significant =  
+
+effectsize::eta_squared(split712_aov, alternative = "two.sided")
+
+### means and SDs ---- 
+dprime_split712 %>%s
+  dplyr::group_by(env) %>% 
+  dplyr::summarize(mean(dprime, na.rm =T),
+                   sd(dprime, na.rm = T))
+
+dprime_split712 %>% 
+  filter(env == "PercTri") %>% 
+  summarise(mean(dprime, na.rm =T)) 
+
+dprime_split712 %>% 
+  filter(env == "PercTri") %>% 
+  summarise(sd(dprime, na.rm =T)) #SD = 0.802
+
+dprime_split16 %>% 
+  filter(env == "Flat") %>% 
+  summarise(mean(dprime, na.rm =T)) #Mean = 0.933
+
+dprime_split712 %>% 
+  filter(env == "Flat") %>% 
+  summarise(sd(dprime, na.rm =T)) #SD = 0.780
+
+
+dprime_split712_only <- dprime_split712 %>% 
+  filter(env == "PercTri")
+summary(aov_dprime_split712_only <- aov_car(dprime~snr + Error(participant/snr), data = dprime_split712_only))
+emmeans(aov_dprime_split712_only, pairwise ~ snr)
+
+# X.21dB - X.33dB   0.3388 0.1043 34   3.249  0.0288 (5 vs 1)
+# X.18dB - X.33dB   0.3995 0.1026 34   3.895  0.0054 (6 vs 1)
+
+
+effectsize::eta_squared(aov_dprime_split712_only)
+
+dprime_split712_flat_only <- dprime_split712 %>% 
+  filter(env == "Flat")
+summary(aov_dprime_split712_flat_only <- aov_car(dprime~snr + Error(participant/snr), data = dprime_split712_flat_only))
+effectsize::eta_squared(aov_dprime_split712_flat_only)
+
+```
+
+```{r}
+# Pre-removal of Participants----
+
+## Dplyr---- 
+dprime_fulltri <- dprime_fulltri %>% mutate(experiment = "Tri-Full")
+dprime_split16 <- dprime_split16 %>% mutate(experiment = "Tri-1:6")
+dprime_split712 <- dprime_split712 %>% mutate(experiment = "Tri-7:12")
+
+dprime_allexp <- bind_rows(dprime_fulltri,dprime_split16,dprime_split712)
+
+## Vis----
+
+dprime_allexp %>% 
+  group_by(env, snr) %>% 
+  ggplot(aes(x=dprime)) +                          
+  geom_histogram() +                      
+  theme_classic() +
+  ggtitle("All Experiments Original Participants (n = 139)") + 
+  stat_bin(bins = 30) +
+  xlim(-5,5) +
+  facet_wrap(vars(snr, env))
+
+# Post-Removal of Participants----
+
+# Removing d' < 1 for Flat -18dB average
+dprime_allexp %>% 
+  filter(env == "Flat", snr == "-18dB") %>% 
+  # dplyr::summarise(across(c(hit, fa, cr, miss, dprime), mean)) %>% 
+  filter(dprime < 1) -> temp11
+
+dprime_allexp %>% 
+  anti_join(temp11, by = c("participant", "experiment")) ->dprime_allexp_removed #n = 81
+
+
+# Histogram plot (post-removal)
+dprime_allexp_removed %>% 
+  group_by(env, snr) %>% 
+  ggplot(aes(x=dprime)) +                          
+  geom_histogram() +                      
+  theme_classic() +
+  ggtitle("All experiments Removed Participants (n=81)") + 
+  stat_bin(bins = 30) +
+  xlim(-5,5) +
+  facet_wrap(vars(env,snr))
+
+
+```
+
+### Speech
+
+```{r}
+#Factorial ANOVA ----
+#Aggregate across 
+
+speech_FullTri_AggData <-crm_fulltri %>% 
+  dplyr::group_by(participant, env, snr) %>% 
+  dplyr::summarize(
+    CRMhit = ifelse(
+      mean(CRMhit),
+      mean(CRMhit)
+    )
+  ) %>% 
+  dplyr::ungroup() 
+
+#custom functions 
+speech_MeanSD(crm_fulltri)
+speech_rmANOVA(crm_fulltri, env_exclusive = T)
+speech_baseline_t.test(crm_fulltri, "env")
+
+speech_effectsize_META_test_between(crm_fulltri, crm_split16)
+speech_effectsize_META_test_between(crm_fulltri, crm_split712)
+speech_effectsize_META_test_between(crm_split16, crm_split712)
+
+#custom functions 
+speech_MeanSD(crm_split16)
+speech_rmANOVA(crm_split16, env_exclusive = F)
+speech_baseline_t.test(crm_split16, "env")
+
+#custom functions 
+speech_MeanSD(crm_split712)
+speech_rmANOVA(crm_split712, env_exclusive = F)
+speech_baseline_t.test(crm_split712, "env")
+
+## Fulltri ----
+
+
+aovCRMcorrect_fulltri <-  aov_car(CRMhit~snr*env + Error(participant/(snr*env)),
+                                  data=(speech_FullTri_AggData 
+                                        %>% filter(env != "silence")
+                                        ))
+
+summary(aovCRMcorrect_fulltri)
+
+effectsize::eta_squared(aovCRMcorrect_fulltri, alternative = "two.sided")
+
+CRMperformance_fulltri_only <- speech_FullTri_AggData %>% 
+  dplyr::filter(env == "PercTri")
+summary(aov_CRMperformance_fulltri_only <- aov_car(CRMhit~snr + Error(participant/snr), data = CRMperformance_fulltri_only))
+emmeans(aov_CRMperformance_fulltri_only, pairwise ~ snr)
+
+effectsize::eta_squared(aov_CRMperformance_fulltri_only, alternative = "two.sided")
+
+CRMperformance_flat_only <- crm_fulltri %>% 
+  dplyr::filter(env == "Flat")
+summary(aov_CRMperformance_flat_only <- aov_car(CRMhit~snr + Error(participant/snr), data = CRMperformance_flat_only))
+emmeans(aov_CRMperformance_flat_only, pairwise ~ snr)
+
+effectsize::eta_squared(aov_CRMperformance_flat_only, alternative = "two.sided")
+
+crm_fulltri %>%
+  dplyr::group_by(env) %>% 
+  dplyr::summarize(mean(CRMhit, na.rm =T),
+                   sd(CRMhit, na.rm = T))
+
+## Split16 ----
+aovCRMcorrect_split16 <- aov_car(CRMhit~snr*env +Error(participant/(snr*env)),data=subset(crm_split16
+                                                         , snr != "silence"
+                                                         )) 
+summary(aovCRMcorrect_split16)
+
+effectsize::eta_squared(aovCRMcorrect_split16, alternative = "two.sided")
+
+CRMperformance_split16_tri_only <- crm_split16 %>% 
+  dplyr::filter(env == "PercTri")
+summary(aov_CRMperformance_split16_tri_only <- aov_car(CRMhit~snr + Error(participant/snr), data = CRMperformance_split16_tri_only))
+emmeans(aov_CRMperformance_split16_tri_only, pairwise ~ snr)
+
+effectsize::eta_squared(aov_CRMperformance_split16_tri_only, alternative = "two.sided")
+
+CRMperformance__split16_flat_only <- crm_split16 %>% 
+  dplyr::filter(env == "Flat")
+summary(aov_CRMperformance_split16_flat_only <- aov_car(CRMhit~snr + Error(participant/snr), data = CRMperformance__split16_flat_only))
+emmeans(aov_CRMperformance_split16_flat_only, pairwise ~ snr)
+
+effectsize::eta_squared(aov_CRMperformance_split16_flat_only, alternative = "two.sided")
+
+crm_split16 %>%
+  dplyr::group_by(env) %>% 
+  dplyr::summarize(mean(CRMhit, na.rm =T),
+                   sd(CRMhit, na.rm = T))
+
+## Split 712 ---- 
+
+aovCRMcorrect_split712 <- aov_car(CRMhit~snr*env +Error(participant/(snr*env)),data=subset(crm_split712
+                                                         , snr != "silence"
+                                                         )) 
+summary(aovCRMcorrect_split712)
+
+effectsize::eta_squared(aovCRMcorrect_split712, alternative = "two.sided")
+
+CRMperformance_split712_tri_only <- crm_split712 %>% 
+  dplyr::filter(env == "PercTri")
+summary(aov_CRMperformance_split712_tri_only <- aov_car(CRMhit~snr + Error(participant/snr), data = CRMperformance_split712_tri_only))
+emmeans(aov_CRMperformance_split712_tri_only, pairwise ~ snr)
+
+effectsize::eta_squared(aov_CRMperformance_split712_tri_only, alternative = "two.sided")
+
+CRMperformance__split712_flat_only <- crm_split712 %>% 
+  dplyr::filter(env == "Flat")
+summary(aov_CRMperformance_split712_flat_only <- aov_car(CRMhit~snr + Error(participant/snr), data = CRMperformance__split712_flat_only))
+emmeans(aov_CRMperformance_split712_flat_only, pairwise ~ snr)
+
+effectsize::eta_squared(aov_CRMperformance_split712_flat_only, alternative = "two.sided")
+
+crm_split712 %>%
+  dplyr::group_by(env) %>% 
+  dplyr::summarize(mean(CRMhit, na.rm =T),
+                   sd(CRMhit, na.rm = T))
+
+
+```
+
+### Annoyance
+
+```{r}
+# Chi Squared ----
+## Full tri ---- 
+annoy_fulltri$Tone_Choice_env <- as.factor(annoy_fulltri$Tone_Choice_env)
+annoy_fulltri$Tone_Choice_snr <- as.factor(annoy_fulltri$Tone_Choice_snr)
+
+x_fulltri_env <- summary(annoy_fulltri$Tone_Choice_env)
+x_fulltri_snr <- summary(annoy_fulltri$Tone_Choice_snr)
+
+chisq.test(x_fulltri_env, correct = F)
+sum(x_fulltri_env)
+chisq.test(x_fulltri_snr, correct = F)
+sum(x_fulltri_snr)
+
+#percussive is more annoying
+binom.test(x_fulltri_env[[2]], sum(x_fulltri_env), p=0.5, alternative = "greater")
+
+#flat is more annoying
+binom.test(x_fulltri_env[[1]], sum(x_fulltri_env), p=0.5, alternative = "greater")
+
+#McNemar's test for interaction
+summary(table(annoy_fulltri$Tone_Choice_env, annoy_fulltri$Tone_Choice_snr))
+
+
+## split 1-6 ---- 
+annoy_split16$Tone_Choice_env <- as.factor(annoy_split16$Tone_Choice_env)
+annoy_split16$Tone_Choice_snr <- as.factor(annoy_split16$Tone_Choice_snr)
+
+x_split16_env <- summary(annoy_split16$Tone_Choice_env)
+x_split16_snr <- summary(annoy_split16$Tone_Choice_snr)
+
+chisq.test(x_split16_env)
+sum(x_split16_env)
+chisq.test(x_split16_snr)
+sum(x_split16_snr)
+
+#percussive is more annoying
+binom.test(x_split16_env[[2]], sum(x_split16_env), p=0.5, alternative = "greater")
+
+#flat is more annoying
+binom.test(x_split16_env[[1]], sum(x_split16_env), p=0.5, alternative = "greater")
+
+#McNemar's test for interaction
+summary(table(annoy_split16$Tone_Choice_env, annoy_split16$Tone_Choice_snr))
+
+
+## split 7-12 ---- 
+annoy_split712$Tone_Choice_env <- as.factor(annoy_split712$Tone_Choice_env)
+annoy_split712$Tone_Choice_snr <- as.factor(annoy_split712$Tone_Choice_snr)
+
+x_split712_env <- summary(annoy_split712$Tone_Choice_env)
+x_split712_snr <- summary(annoy_split712$Tone_Choice_snr)
+
+chisq.test(x_split712_env)
+sum(x_split712_env)
+chisq.test(x_split712_snr)
+sum(x_split712_snr)
+
+#percussive is more annoying
+binom.test(x_split712_env[[2]], sum(x_split712_env), p=0.5, alternative = "greater")
+
+#flat is more annoying
+binom.test(x_split712_env[[1]], sum(x_split712_env), p=0.5, alternative = "greater")
+
+#McNemar's test for interaction
+summary(table(annoy_split712$Tone_Choice_env, annoy_split712$Tone_Choice_snr))
+
+# GLM 
+crm_fulltri %>%
+  mutate(
+    chosen_env = factor(chosen_env),  # "Flat" or "PercTri"
+    snr = factor(snr, levels = c("-30dB", "-27dB", "-27dB", "0dB")),  # Ordered factor
+    env_pair = paste(env1, env2, sep = "_vs_")  # Unique pair IDs
+  )
+
+## Full tri 
+
+
+
+# GLMM ----
+
+# 1 = PercTri | 0 = Flat
+
+## Full tri ----
+annoy_fulltri %>% 
+  dplyr::mutate(Tone_Choice_env = as.factor(Tone_Choice_env),
+                Tone_Choice_snr = as.factor(Tone_Choice_snr),
+                participant = as.factor(participant),
+                response = ifelse(Tone_Choice_env == "PercTri", 1, 0)) -> poop
+
+summary(glmer(response ~ Tone_Choice_snr + (1|participant), 
+      family = binomial, 
+      data = poop))
+
+```
+
+### Outliers
+
+```{r}
+#Finds outliers
+
+dprime_fulltri %>% 
+  group_by(env, snr) %>%
+  identify_outliers(dprime) #participant number 21 has an outlier 
+
+#boxplot
+dprime_fulltri %>% 
+  ggboxplot(x = 'snr', y = 'dprime', add = 'point', facet.by = 'env') 
+
+#Shapiro test for normality 
+dprime_fulltri_removed %>% 
+  group_by(env, snr) %>% 
+  shapiro_test(dprime)
+
+#only PercTri -18, -21 and -24 does not follow normality
+
+# qq plot
+dprime_fulltri %>% 
+  group_by(env, snr) %>% 
+  ggplot(aes(sample = dprime)) +
+  stat_qq() +                                 # Plots the Q-Q plot
+  stat_qq_line() +                            # Adds the 45-degree reference line
+  ggtitle("Q-Q Plot") +                       # Add a title
+  theme_classic() +                           # Use a minimal theme
+  facet_wrap(vars(env,snr))
+
+# density plot
+dprime_fulltri %>% 
+  group_by(env, snr) %>% 
+  ggplot(aes(x=dprime)) +                          
+  geom_density(alpha=.4) +                      
+  theme_classic() +      
+  xlim(-2,5) +
+  facet_wrap(vars(env,snr))
+
+# Histogram plot (pre-removal)
+dprime_fulltri %>% 
+  group_by(env, snr) %>% 
+  ggplot(aes(x=dprime)) +                          
+  geom_histogram() +                      
+  theme_classic() +
+  ggtitle("Tri-Full: Original Participants (n=46)") +
+  stat_bin(bins = 50) +
+  xlim(-5,5) +
+  facet_wrap(vars(env, snr))
+
+# Removing d' < 1 for Flat -18dB average
+dprime_fulltri %>% 
+  filter(env == "Flat", snr == "-18dB") %>% 
+  group_by(participant) %>%
+  # dplyr::summarise(across(c(hit, fa, cr, miss, dprime), mean)) %>% 
+  filter(dprime < 1) -> temp11
+
+dprime_fulltri %>% 
+  anti_join(temp11, by = "participant") -> dprime_fulltri_removed #n = 26
+
+# # Removing d' lowest 10% percentile
+# threshold <- quantile(dprime_fulltri$dprime, 0.05) 
+
+# Histogram plot (post-removal)
+dprime_fulltri_removed %>% 
+  group_by(env, snr) %>% 
+  ggplot(aes(x=dprime)) +                          
+  geom_histogram() +                      
+  theme_classic() +
+  ggtitle("Tri-Full: Removed Participants (n=26)") +
+  stat_bin(bins = 30) +
+  xlim(-5,5) +
+  facet_wrap(vars(env,snr))
+
+
+#Finds outliers
+
+dprime_split16 %>% 
+  group_by(env, snr) %>%
+  identify_outliers(dprime) 
+
+#boxplot
+dprime_split16 %>% 
+  ggboxplot(x = 'snr', y = 'dprime', add = 'point', facet.by = 'env') 
+
+#Shapiro test for normality 
+dprime_split16 %>% 
+  group_by(env, snr) %>% 
+  shapiro_test(dprime)
+
+#only PercTri -18, -21 and -24 does not follow normality
+
+# qq plot
+dprime_split16 %>% 
+  group_by(env, snr) %>% 
+  ggplot(aes(sample = dprime)) +
+  stat_qq() +                                 # Plots the Q-Q plot
+  stat_qq_line() +                            # Adds the 45-degree reference line
+  ggtitle("Q-Q Plot") +                       # Add a title
+  theme_classic() +                           # Use a minimal theme
+  facet_wrap(vars(env,snr))
+
+# density plot
+dprime_split16 %>% 
+  group_by(env, snr) %>% 
+  ggplot(aes(x=dprime)) +                          
+  geom_density(alpha=.4) +                      
+  theme_classic() +      
+  xlim(-2,5) +
+  facet_wrap(vars(env,snr))
+
+# Histogram plot (pre-removal)
+dprime_split16 %>% 
+  group_by(env, snr) %>% 
+  ggplot(aes(x=dprime)) +                          
+  geom_histogram() +                      
+  theme_classic() +   
+  ggtitle("Split-1:6 Original Participants (n=39)") +
+  xlim(-5,5) +
+  stat_bin(bins = 50) +
+  facet_wrap(vars(env,snr))
+
+# Removing d' < 1 for Flat -18dB average
+dprime_split16 %>% 
+  filter(env == "Flat", snr == "-18dB") %>% 
+  group_by(participant) %>%
+  # dplyr::summarise(across(c(hit, fa, cr, miss, dprime), mean)) %>% 
+  filter(dprime < 1) -> temp11
+
+dprime_split16 %>% 
+  anti_join(temp11, by = "participant") -> dprime_split16_removed #n = 17
+
+# Histogram plot (post-removal)
+dprime_split16_removed %>% 
+  group_by(env, snr) %>% 
+  ggplot(aes(x=dprime)) +                          
+  geom_histogram() +                      
+  theme_classic() +   
+  ggtitle("Split-1:6 Removed Participants (n=17)") +
+  xlim(-5,5) +
+  stat_bin(bins = 30) +
+  facet_wrap(vars(env,snr))
+
+#Finds outliers
+
+dprime_split712 %>% 
+  group_by(env, snr) %>%
+  identify_outliers(dprime) #no outliers
+
+#boxplot
+dprime_split712 %>% 
+  ggboxplot(x = 'snr', y = 'dprime', add = 'point', facet.by = 'env') 
+
+#Shapiro test for normality 
+dprime_split712 %>% 
+  group_by(env, snr) %>% 
+  shapiro_test(dprime)
+
+# qq plot
+dprime_split712 %>% 
+  group_by(env, snr) %>% 
+  ggplot(aes(sample = dprime)) +
+  stat_qq() +                                 # Plots the Q-Q plot
+  stat_qq_line() +                            # Adds the 45-degree reference line
+  ggtitle("Q-Q Plot") +                       # Add a title
+  theme_classic() +                           # Use a minimal theme
+  facet_wrap(vars(env,snr))
+
+# density plot
+dprime_split712 %>% 
+  group_by(env, snr) %>% 
+  ggplot(aes(x=dprime)) +                          
+  geom_density(alpha=.4) +                      
+  theme_classic() +      
+  xlim(-2,5) +
+  facet_wrap(vars(env,snr))
+
+# Histogram plot (pre-removal)
+dprime_split712 %>% 
+  group_by(env, snr) %>% 
+  ggplot(aes(x=dprime)) +                          
+  geom_histogram() +                      
+  theme_classic() +
+  ggtitle("Split-712: Original Participants (n=54)") + 
+  stat_bin(bins = 30) +
+  xlim(-5,5) +
+  facet_wrap(vars(snr, env))
+
+# Removing d' < 1 for Flat -18dB average
+dprime_split712 %>% 
+  filter(env == "Flat", snr == "-18dB") %>% 
+  group_by(participant) %>%
+  # dplyr::summarise(across(c(hit, fa, cr, miss, dprime), mean)) %>% 
+  filter(dprime < 1) -> temp11
+
+dprime_split712 %>% 
+  anti_join(temp11, by = "participant") -> dprime_split712_removed #n = 38
+
+# Histogram plot (post-removal)
+dprime_split712_removed %>% 
+  group_by(env, snr) %>% 
+  ggplot(aes(x=dprime)) +                          
+  geom_histogram() +                      
+  theme_classic() +
+  ggtitle("Split-712: Removed Participants (n=38)") + 
+  stat_bin(bins = 30) +
+  xlim(-5,5) +
+  facet_wrap(vars(env,snr))
+
+
+```
